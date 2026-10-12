@@ -19,6 +19,14 @@
 //! hosts, and the OpenGL route is the one Rust plug-in editors have used in
 //! hosts for longest. Nothing outside this module depends on the choice.
 //!
+//! # The keyboard
+//!
+//! The window tells the host when it gains and loses the keyboard focus
+//! and when a text field is taking the keys, and passes on every plain key
+//! (no Command, Control or Alt, not a repeat) it gets while no text field
+//! is: [`lspk_plugin::editor`]'s "The keyboard". The standalone app plays
+//! them on the computer keyboard; a plug-in format's host ignores them.
+//!
 //! # Sizes, scale and zoom
 //!
 //! A [`View`] lays out in points. The editor's size is kept in points at
@@ -37,7 +45,8 @@ use baseview::{HandlerError, ParentWindowHandle, WindowSize};
 use egui::{Key, Rect, Sense, Ui, Vec2, ViewportCommand, pos2, vec2};
 use egui_baseview::{EguiWindow, EguiWindowSettings, Frame};
 use lspk_plugin::{
-    Editor, EditorContext, EditorSize, ParentWindow, PluginError, ResizeHints, WindowApi,
+    Editor, EditorContext, EditorKey, EditorSize, KeyboardFocus, ParentWindow, PluginError,
+    ResizeHints, WindowApi,
 };
 use raw_window_handle::{
     AppKitWindowHandle, HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle,
@@ -308,6 +317,7 @@ impl EguiEditor {
             min_size: self.options.min_size,
             ctx: None,
             accessibility: None,
+            focus: KeyboardFocus::default(),
         };
         let host = baseview::host::Host::new()
             .with_callbacks(Callbacks {
@@ -565,6 +575,8 @@ struct WindowApp {
     min_size: Vec2,
     ctx: Option<egui::Context>,
     accessibility: Option<Accessibility>,
+    /// Where the window stood with the keyboard, as last told to the host.
+    focus: KeyboardFocus,
 }
 
 impl egui_baseview::App for WindowApp {
@@ -606,6 +618,7 @@ impl egui_baseview::App for WindowApp {
         if self.resizable {
             resize_grip(ui, &self.theme, self.state.points(), self.min_size);
         }
+        self.focus = pass_keys(ui, &self.cx, self.focus);
         // Asked of the window, not egui: egui calls back only when a
         // repaint comes sooner than one already asked for, and
         // egui-baseview doesn't read the delay egui reports.
@@ -622,11 +635,83 @@ impl egui_baseview::App for WindowApp {
 
 impl Drop for WindowApp {
     fn drop(&mut self) {
+        if self.focus != KeyboardFocus::default() {
+            self.cx.set_keyboard_focus(KeyboardFocus::default());
+        }
         if let Some(ctx) = self.ctx.take() {
             end_open_gestures(&ctx, &self.cx);
             OPEN_WINDOWS.fetch_sub(1, Ordering::AcqRel);
         }
     }
+}
+
+/// Tells the host where the window stands with the keyboard, if that has
+/// changed since `before`, and passes on this frame's plain keys while no
+/// text field is taking them. Returns where it stands now.
+fn pass_keys(ui: &Ui, cx: &EditorContext, before: KeyboardFocus) -> KeyboardFocus {
+    let (focused, events) = ui.input(|i| (i.focused, i.events.clone()));
+    let focus = KeyboardFocus {
+        focused,
+        typing: focused && ui.ctx().egui_wants_keyboard_input(),
+    };
+    if focus != before {
+        cx.set_keyboard_focus(focus);
+    }
+    if focus.focused && !focus.typing {
+        for key in plain_keys(&events) {
+            cx.key(key);
+        }
+    }
+    focus
+}
+
+/// The plain keys in `events`: no Command, Control or Alt, and not a
+/// repeat.
+#[must_use]
+pub fn plain_keys(events: &[egui::Event]) -> Vec<EditorKey> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            egui::Event::Key {
+                key,
+                pressed,
+                repeat: false,
+                modifiers,
+                ..
+            } if !(modifiers.command || modifiers.ctrl || modifiers.alt) => {
+                key_char(*key).map(|key| EditorKey {
+                    key,
+                    pressed: *pressed,
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The character `key` types on a US layout, in lower case, for the keys
+/// an [`EditorKey`] carries.
+#[must_use]
+pub fn key_char(key: Key) -> Option<char> {
+    let name = key.name();
+    let mut chars = name.chars();
+    match (chars.next(), chars.next()) {
+        (Some(c), None) if c.is_ascii_alphanumeric() => return Some(c.to_ascii_lowercase()),
+        _ => {}
+    }
+    Some(match key {
+        Key::Semicolon => ';',
+        Key::Quote => '\'',
+        Key::Comma => ',',
+        Key::Period => '.',
+        Key::Slash => '/',
+        Key::OpenBracket => '[',
+        Key::CloseBracket => ']',
+        Key::Minus => '-',
+        Key::Equals => '=',
+        Key::Backtick => '`',
+        _ => return None,
+    })
 }
 
 /// Readies `ctx` for an editor: the theme, AccessKit on, and the zoom keys
@@ -703,6 +788,44 @@ fn resize_grip(ui: &mut Ui, theme: &Theme, size: Vec2, min_size: Vec2) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_plain_keys_pass_on() {
+        let key = |key, pressed, repeat, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed,
+            repeat,
+            modifiers,
+        };
+        let plain = egui::Modifiers::NONE;
+        let events = [
+            key(Key::A, true, false, plain),
+            key(Key::A, true, true, plain),
+            key(Key::S, true, false, egui::Modifiers::COMMAND),
+            key(Key::D, true, false, egui::Modifiers::ALT),
+            key(Key::Semicolon, false, false, egui::Modifiers::SHIFT),
+            key(Key::ArrowUp, true, false, plain),
+            egui::Event::Text("a".to_owned()),
+        ];
+        assert_eq!(
+            plain_keys(&events),
+            [
+                EditorKey {
+                    key: 'a',
+                    pressed: true
+                },
+                EditorKey {
+                    key: ';',
+                    pressed: false
+                },
+            ]
+        );
+        assert_eq!(key_char(Key::Num7), Some('7'));
+        assert_eq!(key_char(Key::Z), Some('z'));
+        assert_eq!(key_char(Key::Quote), Some('\''));
+        assert_eq!(key_char(Key::Enter), None);
+    }
 
     #[test]
     fn sizes_are_points_times_zoom_and_pixels_times_scale() {

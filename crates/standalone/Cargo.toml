@@ -28,12 +28,26 @@ egui-baseview = { version = "=0.8.1", default-features = false, features = [
     "opengl",
     "log",
 ] }
+# The app's window as the editor's parent.
+raw-window-handle = "0.6.2"
 # Native dialogs for opening and saving state files; on Linux through the
 # desktop portal, with no GTK.
 rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
 # The settings file.
 serde = { version = "1.0.228", default-features = false, features = ["std", "derive"] }
 serde_json = "1"
+
+# The menu bar: the app's on macOS, the window's on Windows. Linux has none
+# without GTK, which the app doesn't take.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+muda = { version = "0.21.2", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+# The window's style, so it doesn't draw over the editor inside it.
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [dev-dependencies]
 lspk-rt.workspace = true

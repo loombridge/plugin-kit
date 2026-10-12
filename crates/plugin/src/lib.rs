@@ -75,7 +75,10 @@ pub mod state;
 pub mod clap;
 
 pub use audio::{Buffers, MAX_CHANNELS};
-pub use editor::{Editor, EditorContext, EditorSize, ParentWindow, ResizeHints, WindowApi};
+pub use editor::{
+    Editor, EditorContext, EditorKey, EditorSize, KeyboardFocus, ParentWindow, ResizeHints,
+    WindowApi,
+};
 pub use events::{Event, EventSource, Events, Expression, Note};
 pub use host::{EditError, EventSink, Host, HostBackend, OutputEvent, ProcessContext, Waker};
 pub use lspk_commands::{RegisterError, Registry};
