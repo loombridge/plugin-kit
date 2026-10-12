@@ -1,0 +1,43 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+# The fixtures are workspaces of their own, which `cargo xtask deny-selftest`
+# checks against deny.toml.
+exclude = ["xtask/fixtures"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+repository = "https://github.com/loombridge/plugin-kit"
+# Plug-ins depend on the kit by git revision until its API settles; nothing is
+# published to crates.io before then.
+publish = false
+
+[workspace.dependencies]
+lspk-rt = { path = "crates/rt" }
+lspk-params = { path = "crates/params" }
+lspk-commands = { path = "crates/commands" }
+lspk-agent = { path = "crates/agent" }
+lspk-dsp = { path = "crates/dsp" }
+lspk-voice = { path = "crates/voice" }
+lspk-mod = { path = "crates/mod" }
+lspk-fx = { path = "crates/fx" }
+lspk-wavetable = { path = "crates/wavetable" }
+lspk-seq = { path = "crates/seq" }
+lspk-presets = { path = "crates/presets" }
+lspk-ui = { path = "crates/ui" }
+lspk-plugin = { path = "crates/plugin" }
+lspk-test = { path = "crates/test" }
+
+[workspace.lints.rust]
+rust_2018_idioms = { level = "warn", priority = -1 }
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"
+unimplemented = "warn"

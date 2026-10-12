@@ -1,0 +1,12 @@
+[package]
+name = "lspk-voice"
+description = "Polyphonic voice allocation and stealing, mono, legato and glide, unison stacks with detune and spread, MPE and per-note expression."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

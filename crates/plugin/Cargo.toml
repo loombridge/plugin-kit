@@ -1,0 +1,12 @@
+[package]
+name = "lspk-plugin"
+description = "The format layer: one Plugin trait, exported as CLAP natively, as VST3 and Audio Unit, as a standalone app and as a native Beatlayer device."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

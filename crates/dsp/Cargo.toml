@@ -1,0 +1,12 @@
+[package]
+name = "lspk-dsp"
+description = "DSP building blocks: band-limited and wavetable oscillators, interpolators, zero-delay-feedback filters, envelopes, LFOs, oversampling, FFT, resampling, SIMD helpers and waveshapers."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

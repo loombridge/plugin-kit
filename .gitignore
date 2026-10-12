@@ -1,0 +1,8 @@
+/target
+/xtask/fixtures/*/target
+.DS_Store
+# Per-machine Claude settings
+/.claude/settings.local.json
+
+# Keys never belong in the repository.
+*.pem

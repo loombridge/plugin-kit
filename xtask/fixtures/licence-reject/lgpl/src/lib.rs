@@ -1,0 +1,1 @@
+//! A crate licensed LGPL-2.1-or-later.
