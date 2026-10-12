@@ -9,10 +9,10 @@
 //!   from the same library. They need nothing more from a plug-in.
 //!   [`bundle`] lays the library out as each format's bundle, as
 //!   `cargo xtask bundle` does.
-//! - **A standalone app** (R0.7) and **a native Beatlayer device** (R0.8)
-//!   drive the same two traits through their own adapters, with
-//!   [`ParamValues`], a [`HostBackend`], [`Events::from_slice`] and an
-//!   [`EventSink`] of their own.
+//! - **A standalone app** (`lspk-standalone`) and **a native Beatlayer
+//!   device** (R0.8) drive the same two traits through their own adapters,
+//!   with [`ParamValues`], a [`HostBackend`], [`Events::from_slice`] and an
+//!   [`EventSink`] of their own. [`bundle::write_app`] lays the app out.
 //!
 //! # The two halves of a plug-in
 //!
@@ -101,9 +101,10 @@ use std::fmt;
 ///   gestures only while the plug-in's editor is open, since it gets its
 ///   idle timer from the editor's run loop; without one, the values still
 ///   reach the host, as output parameter changes from `process`.
-/// - **R0.7, standalone:** an adapter that calls [`Plugin::activate`] and
-///   [`Processor::process`] from an audio device's callback, with a
-///   [`HostBackend`] of its own.
+/// - **The standalone app** (`lspk-standalone`): calls
+///   [`Plugin::activate`] and [`Processor::process`] from an audio
+///   device's callback, with a [`HostBackend`] of its own, and opens
+///   [`Plugin::editor`] in a window of its own.
 /// - **R0.8, the Beatlayer device:** the same, inside Beatlayer's engine (its
 ///   own adapter, in Beatlayer), with [`Plugin::register_commands`] and
 ///   [`Plugin::run_command`] reached through Beatlayer's registry; and the
