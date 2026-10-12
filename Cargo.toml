@@ -33,6 +33,7 @@ lspk-plugin = { path = "crates/plugin", default-features = false }
 lspk-test = { path = "crates/test" }
 lspk-plugin-agent = { path = "crates/plugin-agent" }
 lspk-clap-wrapper = { path = "crates/clap-wrapper" }
+lspk-standalone = { path = "crates/standalone" }
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }

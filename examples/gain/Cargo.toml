@@ -13,6 +13,12 @@ publish = false
 # its entry point, and makes Cargo build the cdylib beside them.
 crate-type = ["cdylib", "rlib"]
 
+# The standalone app, which `cargo xtask bundle` lays out beside the
+# plug-in's formats.
+[[bin]]
+name = "lspk-example-gain-standalone"
+path = "src/main.rs"
+
 [dependencies]
 # Its own command, `gain.reset`.
 lspk-commands.workspace = true
@@ -26,6 +32,8 @@ lspk-ui.workspace = true
 lspk-plugin-agent.workspace = true
 # Its command's arguments and results.
 serde_json = "1"
+# The standalone app.
+lspk-standalone.workspace = true
 
 [dev-dependencies]
 lspk-agent.workspace = true
