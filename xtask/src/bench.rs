@@ -461,15 +461,16 @@ fn gate(root: &Path) -> Result<(), String> {
     };
     let verdict = compare(&baseline, &counts);
     print_verdict(&verdict);
+    // Printed whatever the verdict, for `--update-baseline --from`.
+    println!("\n--- instruction counts ---\n{text}\n--- end ---");
     if verdict.failures.is_empty() {
         println!("\nNo benchmark is more than {THRESHOLD_PERCENT} % slower than {BASELINE}.");
         return Ok(());
     }
-    println!("\n--- instruction counts ---\n{text}\n--- end ---");
     Err(format!(
         "the benchmark gate failed:\n  {}\n\nIf this is intended, update the baseline and say why \
          in the pull request: `cargo xtask bench --update-baseline --reason \"...\"` on x86-64 \
-         Linux, or anywhere with the counts above saved as a file and passed with `--from \
+         Linux, or anywhere with the counts printed above saved as a file and passed with `--from \
          <file>`. Commit {BASELINE}.",
         verdict.failures.join("\n  ")
     ))
