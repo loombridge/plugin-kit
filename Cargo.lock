@@ -1355,6 +1355,16 @@ version = "0.0.0"
 [[package]]
 name = "lspk-mod"
 version = "0.0.0"
+dependencies = [
+ "lspk-commands",
+ "lspk-dsp",
+ "lspk-params",
+ "lspk-rt",
+ "lspk-test",
+ "schemars",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "lspk-params"

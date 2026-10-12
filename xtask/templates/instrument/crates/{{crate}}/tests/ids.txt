@@ -1,0 +1,3 @@
+0x00000001 param "Level"
+0x01000000 env "1" / param "Attack"
+0x01000001 env "1" / param "Release"

@@ -1,0 +1,80 @@
+# Dependency policy, checked by `cargo xtask check` through cargo-deny.
+#
+{{#permissive}}
+# {{Name}} is MIT OR Apache-2.0, as the plug-in kit is, so it takes no
+# copyleft dependency: every dependency must be under a permissive licence.
+# `cargo xtask deny-selftest` proves this file still rejects GPL, LGPL and
+# AGPL crates.
+{{/permissive}}
+{{#gpl}}
+# {{Name}} is GPL-3.0-or-later, so every dependency must be under a licence
+# that can be combined with it. `cargo xtask deny-selftest` proves this file
+# still rejects an AGPL crate.
+{{/gpl}}
+
+[graph]
+all-features = true
+
+[advisories]
+ignore = []
+
+[licenses]
+confidence-threshold = 0.93
+# The allow-list is policy, not an inventory, so licences no dependency uses yet
+# are expected.
+unused-allowed-license = "allow"
+allow = [
+{{#gpl}}
+    # Permissive.
+{{/gpl}}
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CC0-1.0",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+{{#gpl}}
+    # Weak copyleft that can be combined with GPL-3.0.
+    "MPL-2.0",
+    "LGPL-2.1-or-later",
+    "LGPL-3.0-only",
+    "LGPL-3.0-or-later",
+    # Strong copyleft that can be combined with GPL-3.0-or-later.
+    "GPL-2.0-or-later",
+    "GPL-3.0-or-later",
+{{/gpl}}
+]
+{{#permissive}}
+# Deliberately absent: every copyleft licence, strong or weak (GPL, LGPL,
+# AGPL, MPL, EPL, CDDL, OFL), as well as SSPL and proprietary licences.
+{{/permissive}}
+{{#gpl}}
+# Deliberately absent:
+# - GPL-2.0-only: can't be combined with GPL-3.0.
+# - GPL-3.0-only: compatible, but it would pin the whole plug-in to
+#   GPL-3.0-only. Adding it needs a decision first.
+# - AGPL, EPL, CDDL, SSPL, and proprietary licences.
+{{/gpl}}
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace crates refer to each other by path, without a version.
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# The plug-in kit, which {{Name}} depends on by git revision until its API
+# settles.
+allow-git = ["https://github.com/loombridge/plugin-kit"]

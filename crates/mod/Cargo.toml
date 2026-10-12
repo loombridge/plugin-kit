@@ -8,5 +8,30 @@ license = "MIT OR Apache-2.0"
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+# Drawn curves (the LFO's `Shape`), the bend law and the SIMD lanes.
+lspk-dsp.workspace = true
+# Parameter IDs, which name destinations.
+lspk-params.workspace = true
+# The matrix's editing commands.
+lspk-commands.workspace = true
+# Pinned to lspk-commands' version: command references are generated from
+# these schemas.
+schemars = { version = "=1.2.2", default-features = false, features = ["std", "derive"] }
+serde = { version = "1.0.228", default-features = false, features = ["std", "derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+# The micro-benchmarks' suite format.
+lspk-test.workspace = true
+# The allocation trap, for the real-time tests.
+lspk-rt.workspace = true
+
+# Micro-benchmarks for the hot paths, run by `cargo xtask bench` (timing) and
+# counted by its instruction-count gate.
+[[bench]]
+name = "perf"
+harness = false
+
 [lints]
 workspace = true
