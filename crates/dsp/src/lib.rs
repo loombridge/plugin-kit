@@ -7,6 +7,7 @@
 //! | Module | What it holds |
 //! |---|---|
 //! | [`smooth`] | Parameter smoothing, from `lspk-params` |
+//! | [`lfo`] | LFOs: drawn shapes, an XY path, chaos and sample and hold, per voice or shared, with a SIMD path across voices |
 //! | [`oversample`] | Oversampling by 2, 4 or 8 for nonlinear processes |
 //! | [`simd`] | Lanes of `f32` for NEON, SSE4.2, AVX2 and AVX-512, chosen at run time, with a portable fallback |
 //!
@@ -15,6 +16,7 @@
 //! micro-benchmark in `benches/perf.rs`, which the instruction-count gate
 //! covers.
 
+pub mod lfo;
 pub mod oversample;
 pub mod simd;
 /// Parameter smoothing, from the plug-in kit's `lspk-params`.
