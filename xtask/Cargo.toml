@@ -13,6 +13,8 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
+# Lays out plug-in files for `cargo xtask bundle`; no format export needed.
+lspk-plugin.workspace = true
 serde_json = "1"
 
 [lints]

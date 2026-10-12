@@ -8,5 +8,35 @@ license = "MIT OR Apache-2.0"
 repository.workspace = true
 publish.workspace = true
 
+[features]
+default = ["clap"]
+# The CLAP export (`export_clap!`), through clack.
+clap = ["dep:clack-plugin", "dep:clack-extensions"]
+
+[dependencies]
+lspk-commands.workspace = true
+lspk-params.workspace = true
+# Command arguments and results, as lspk-commands takes them.
+serde_json = "1"
+# The main thread's parameter edits reach the audio thread through this queue,
+# as lspk-rt's logger uses it.
+rtrb = "0.4.0"
+# Pinned exactly, as clack-host is in Beatlayer's plug-in host: clack's API
+# moves between releases.
+clack-plugin = { version = "=0.2.0", optional = true }
+clack-extensions = { version = "=0.2.0", optional = true, features = [
+    "clack-plugin",
+    "audio-ports",
+    "latency",
+    "note-ports",
+    "params",
+    "state",
+    "tail",
+] }
+
+[dev-dependencies]
+lspk-rt.workspace = true
+lspk-test.workspace = true
+
 [lints]
 workspace = true

@@ -8,5 +8,21 @@ license = "MIT OR Apache-2.0"
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+# Only for laying out CLAP files; the CLAP export itself isn't needed.
+lspk-plugin = { workspace = true, default-features = false }
+lspk-rt.workspace = true
+# A CLAP host for tests, pinned exactly as lspk-plugin pins clack-plugin.
+clack-host = "=0.2.0"
+clack-extensions = { version = "=0.2.0", features = [
+    "clack-host",
+    "audio-ports",
+    "latency",
+    "note-ports",
+    "params",
+    "state",
+    "tail",
+] }
+
 [lints]
 workspace = true

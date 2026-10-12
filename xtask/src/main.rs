@@ -18,6 +18,9 @@ Tasks:
   deny-selftest  Prove that deny.toml still rejects GPL, LGPL and AGPL dependencies
   private-terms  Fail if a tracked file contains a word listed in .git/info/private-terms
                  (maintainers' checkouts only; skipped without it)
+  bundle <crate>...
+                 Build each plug-in crate in release and lay it out as a CLAP file in
+                 target/bundle (for clap-validator and hosts)
   help           Show this message
 ";
 
@@ -77,6 +80,9 @@ fn main() -> ExitCode {
 
 fn run(root: &Path, args: &[String]) -> Result<(), String> {
     let task = args.first().map(String::as_str);
+    if task == Some("bundle") {
+        return bundle(root, &args[1..]);
+    }
     if let Some(extra) = args.get(1) {
         return Err(format!("unexpected `{extra}`\n\n{USAGE}"));
     }
@@ -91,6 +97,48 @@ fn run(root: &Path, args: &[String]) -> Result<(), String> {
         }
         Some(other) => Err(format!("unknown task `{other}`\n\n{USAGE}")),
     }
+}
+
+/// Builds each plug-in crate in `packages` in release, and writes it as
+/// `target/bundle/<crate>.clap`.
+fn bundle(root: &Path, packages: &[String]) -> Result<(), String> {
+    if packages.is_empty() {
+        return Err(format!("name the plug-in crates to bundle\n\n{USAGE}"));
+    }
+    let mut args = vec!["build", "--release", "--locked"];
+    for package in packages {
+        args.extend(["--package", package]);
+    }
+    cargo(root, &args)?;
+    let metadata = cargo_metadata(root)?;
+    let target = metadata["target_directory"]
+        .as_str()
+        .map(PathBuf::from)
+        .ok_or("cargo metadata gave no target directory")?;
+    for package in packages {
+        let library = target.join("release").join(format!(
+            "{}{}{}",
+            std::env::consts::DLL_PREFIX,
+            package.replace('-', "_"),
+            std::env::consts::DLL_SUFFIX
+        ));
+        if !library.exists() {
+            return Err(format!(
+                "{} has no library at {}: is it a cdylib?",
+                package,
+                library.display()
+            ));
+        }
+        let clap = lspk_plugin::bundle::write_clap(
+            &library,
+            &target.join("bundle"),
+            package,
+            &format!("com.loombridge.{package}"),
+        )
+        .map_err(|e| format!("couldn't write {package}'s CLAP file: {e}"))?;
+        eprintln!("{}", clap.display());
+    }
+    Ok(())
 }
 
 /// Runs every check, reports each result, and fails if any failed.

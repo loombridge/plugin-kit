@@ -1,0 +1,25 @@
+[package]
+name = "lspk-example-sine"
+description = "A polyphonic sine instrument built on the plug-in kit, for the kit's tests and as the seed of its instrument template. Never published."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish = false
+
+[lib]
+# The cdylib is the CLAP plug-in; the rlib lets its tests reach its types and
+# its entry point, and makes Cargo build the cdylib beside them.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lspk-params.workspace = true
+lspk-plugin = { workspace = true, features = ["clap"] }
+
+[dev-dependencies]
+lspk-rt.workspace = true
+lspk-test.workspace = true
+
+[lints]
+workspace = true

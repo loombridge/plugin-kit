@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "xtask"]
+# `examples/` holds test plug-ins built on the kit; they never publish.
+members = ["crates/*", "examples/*", "xtask"]
 # The fixtures are workspaces of their own, which `cargo xtask deny-selftest`
 # checks against deny.toml.
 exclude = ["xtask/fixtures"]
@@ -27,7 +28,8 @@ lspk-wavetable = { path = "crates/wavetable" }
 lspk-seq = { path = "crates/seq" }
 lspk-presets = { path = "crates/presets" }
 lspk-ui = { path = "crates/ui" }
-lspk-plugin = { path = "crates/plugin" }
+# Without its formats by default; a plug-in crate turns on the ones it exports.
+lspk-plugin = { path = "crates/plugin", default-features = false }
 lspk-test = { path = "crates/test" }
 
 [workspace.lints.rust]
