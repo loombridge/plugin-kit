@@ -1,5 +1,5 @@
 //! Filters, per voice, written once for the scalar path and for SIMD lanes
-//! across voices: 96 types in four groups.
+//! across voices: 108 types in five groups.
 //!
 //! | Group | Types | Character control |
 //! |---|---|---|
@@ -7,6 +7,7 @@
 //! | Multi | thirteen dual types, two state-variable stages in series; eight morphing types | the second stage's cutoff; the morph |
 //! | Flanges | combs, flangers and phasers (12, 24, 36 or 48 stages), each with positive or negative feedback and optionally a low-pass, high-pass or both in the feedback path; a flanger-phaser | the feedback filter's frequency, or the band's width |
 //! | Misc | low, band and high EQ; ring modulators; sample and hold; combs, all-passes and a small room; a two-resonance and a zero-delay low-pass; bass add; three vowel types; band reject; comb-feedback low-pass and band-pass; shriek low-pass and band-pass | per type: see [`FilterType::character`] |
+//! | Extended | a buzz morph; a DJ sweep; a diffuser; transistor, diode, clean and driven ladders; a pole-zero filter; Comb II; an expander multimode and band-pass; a K35 | per type: see the table below |
 //!
 //! The Normal group's table:
 //!
@@ -17,6 +18,23 @@
 //! | Peak | 12, 24 | raises the peak, up to +24 dB | no |
 //! | Notch | 12, 24 | narrows the notch | no |
 //! | Ladder low-pass | 6, 12, 18, 24 | yes | yes |
+//!
+//! The Extended group's table:
+//!
+//! | [`FilterType`] | Structure | Character | Self-oscillates |
+//! |---|---|---|---|
+//! | Buzz morph | 12 dB state-variable stage, asymmetric shaper before it, low resonance knee | morph: low-pass, notch at 0.5, high-pass | yes |
+//! | DJ sweep | 12 dB state-variable stage; the cutoff control sweeps low-pass, flat, high-pass | none | no |
+//! | Diffuser | second-order all-pass stages at the cutoff in series | stages, 1 to 8; resonance sets their Q | no |
+//! | Transistor ladder | four one-pole stages whose gain falls as they swing, feedback from the last | Smooth | yes |
+//! | Diode ladder | four coupled stages, asymmetric shaper before them, bass thinning with resonance | Smooth | yes |
+//! | Clean ladder | the diode ladder's coupled stages, pass band compensated, no shaper | Smooth | yes |
+//! | Driven ladder | the transistor ladder after a soft clipper, low resonance knee | overdrive, 0 to +30 dB into the clipper | yes |
+//! | Pole-zero | eight drawn points per state, four states morphed by X and Y ([`pole_zero`]) | Smooth (cutoff, X and Y) | no |
+//! | Comb II | feedback comb reading two taps | second frequency, up to two octaves above | no |
+//! | Expander multimode | four-pole ladder, its taps mixed | low-pass, notch at 0.5, high-pass | yes |
+//! | Expander band-pass | four-pole ladder, its taps mixed | none | yes |
+//! | K35 | Sallen–Key low-pass and high-pass, saturating feedback amplifier | LP/HP: low-pass below 0.5, high-pass from it | yes |
 //!
 //! Every type's character control is [`VoiceParams::character`], except the
 //! Normal group's, whose is [`VoiceParams::saturation`].
@@ -64,6 +82,48 @@
 //!   placed relative to the cutoff. Delays are read with cubic Hermite
 //!   interpolation.
 //! - **Misc.** Each is described on its [`FilterType`] variant.
+//! - **Extended.** The same trapezoidal stages, in a block loop of their
+//!   own that adds the pole-zero filter's X and Y and cutoff smoothing:
+//!   - *Buzz morph*: one state-variable stage whose low-pass and high-pass
+//!     outputs are weighted min(1, 2 (1 − c)) and min(1, 2 c), so it's a
+//!     notch at c = 0.5.
+//!   - *DJ sweep*: the cutoff pitch's distance from the control's middle
+//!     (pitch 68.4) picks the side and how far: below it a low-pass from
+//!     20 kHz down to 30 Hz, above it a high-pass from 10 Hz up to 10 kHz,
+//!     flat within 4 % of each half of the middle and fading in over the
+//!     next tenth.
+//!   - *Diffuser*: all-pass stages x − 2 k band, the output crossfading
+//!     between the taps after whole numbers of stages.
+//!   - *Transistor ladder*: the ladder's closed-form solution with each
+//!     stage's integrator gain scaled by 1 / √(1 + (state / 4)²), the
+//!     stage's swing on the previous sample (the gain-scaling way of
+//!     solving a nonlinear zero-delay loop with one linear solve per
+//!     sample, after Huovilainen, *Non-linear digital implementation of the
+//!     Moog ladder filter*, DAFx 2004, and Zavalishin, chapter 6). Its
+//!     self-oscillation sags about 2 % in pitch at full level.
+//!   - *Diode ladders*: ẏ₁ = ω (u − y₁ − a (y₁ − y₂)), ẏ₂ = ω (y₁ − y₂ −
+//!     a (y₂ − y₃)), ẏ₃ = ω (y₂ − y₃ − a (y₃ − y₄)), ẏ₄ = ω (y₃ − y₄), with
+//!     u = input − k y₄ and coupling a = 0.5: a linearised diode ladder,
+//!     whose stages load each other (Zavalishin, chapter 5; Stinchcombe,
+//!     *Analysis of the Moog transistor ladder and derivative filters*,
+//!     2008). Each sample's four coupled equations are solved by
+//!     elimination. The stage frequency is the cutoff over 1.0553, where
+//!     the open loop turns half a cycle, so it oscillates at the cutoff,
+//!     from k = 8.618.
+//!   - *Pole-zero*: see [`pole_zero`].
+//!   - *Comb II*: y = x + f · clip(½ (y[n − T₁] + y[n − T₂])), out =
+//!     (1 − f) y, T₁ the cutoff's period, T₂ the second frequency's, on the
+//!     delay lines.
+//!   - *Expanders*: the ladder, its output Σ cᵢ yᵢ over the ladder's input
+//!     y₀ and stages y₁ to y₄: low-pass (0, 0, 0, 0, 1), notch
+//!     (1, −4, 8, −8, 4), high-pass (1, −4, 6, −4, 1), band-pass
+//!     4 × (0, 0, 1, −2, 1), the four-pole responses of mixing a ladder's
+//!     taps (Zavalishin, chapter 5).
+//!   - *K35*: low-pass y = LP(LP(x) + K · HP(y)) and high-pass
+//!     y = HP(HP(x) + K · LP(y)) from one-pole stages, which are
+//!     1 / (s² + (2 − K) s + 1) and s² / (s² + (2 − K) s + 1), so they
+//!     oscillate from K = 2 (after Pirkle's application notes on
+//!     virtual-analogue Korg35 filters, 2013).
 //!
 //! **Nonlinear stages.** Drive (a soft clipper before the filter) and the
 //! resonance path's saturator. The saturator is evaluated at the previous
@@ -107,6 +167,25 @@
 //!   by it and the left's falls; a plug-in maps its control onto it.
 //! - **Character**, per type, is on each variant of [`FilterType`]; the
 //!   stage counts, delay times and formant tables there are first laws too.
+//! - **The Extended group's resonance**: the buzz morph as the 12 dB
+//!   state-variable types; the DJ sweep's damping from √2 down to 0.35
+//!   (about +9 dB of peak); the diffuser's stages from Q 0.5 to 5; the
+//!   transistor, driven and expander ladders as the ladder; the diode
+//!   ladders' feedback from 0 to 1.025 times its edge; the K35's K from 0
+//!   to 2.04; Comb II's feedback from 0 to 0.98. The buzz morph, acid
+//!   ladder, driven ladder and K35 run their resonance saturators 3, 2, 4
+//!   and 3 times lower than the other types'.
+//! - **Smooth** is a one-pole lag on the cutoff pitch (and the pole-zero
+//!   X and Y) with time constant 100 ms × c², starting at the first sample
+//!   after a voice resets.
+//! - **The Extended group's characters**: the diffuser's stages 1 + 7 c;
+//!   the driven ladder's clipper gain 0 to +30 dB, its output divided by
+//!   the clipper's at full scale; Comb II's second frequency 2^(2 c) times
+//!   the first; the K35 crossfading from low-pass to high-pass between
+//!   c = 0.45 and 0.55.
+//! - **The acid shaper** is (clip(x + 0.3) − clip(0.3)) / clip′(0.3) with
+//!   the drive's soft clipper: unity slope at zero, so small signals pass,
+//!   and even harmonics as it saturates.
 //!
 //! # Layout
 //!
@@ -120,19 +199,25 @@
 //! glide), so they change without zipper noise and the output is the same
 //! whatever the block sizes.
 //!
+//! The pole-zero filter's X and Y can also be modulated at audio rate
+//! ([`FilterBank::process_xy`]), as offsets laid out like the pitch.
+//!
 //! Everything a bank needs is allocated when it's made, including a delay
 //! ring of 1/8 s at its rate for every voice and channel;
 //! [`FilterBank::process`] allocates nothing, locks nothing and never
 //! blocks.
 
+mod extended;
 mod flange;
 mod lane;
 mod lines;
 mod misc;
 mod multi;
+pub mod pole_zero;
 
 use lane::{Lane, TAN_LIMIT, exp2, saturation_gain, soft_clip, tan};
 use lines::Lines;
+use pole_zero::PoleZeroDesign;
 
 use std::marker::PhantomData;
 
@@ -373,6 +458,43 @@ pub enum FilterType {
     ShriekLp,
     /// Shriek band-pass.
     ShriekBp,
+    /// Buzz morph: a gritty 12 dB state-variable stage, an asymmetric
+    /// shaper before it, morphing from low-pass (character 0) through notch
+    /// (0.5) to high-pass (1).
+    BuzzMorph,
+    /// DJ sweep: the cutoff control sweeps from low-pass (below its middle)
+    /// through flat to high-pass (above). Character does nothing.
+    DjSweep,
+    /// Diffuser: second-order all-pass stages at the cutoff in series;
+    /// character sets how many, 1 to 8, and resonance their Q.
+    Diffuser,
+    /// Transistor ladder with saturating stages; character is Smooth.
+    TransistorLadder,
+    /// Diode ladder, acid style: coupled stages, an asymmetric shaper, and
+    /// the bass thinning with resonance; character is Smooth.
+    DiodeLadder,
+    /// Clean diode ladder: coupled stages, the pass band compensated, no
+    /// shaper; character is Smooth.
+    CleanLadder,
+    /// Driven ladder: the transistor ladder after a soft clipper whose gain
+    /// character raises (overdrive).
+    DrivenLadder,
+    /// Pole-zero: eight drawn points per state, four states morphed by
+    /// [`VoiceParams::morph_x`] and [`VoiceParams::morph_y`]
+    /// ([`pole_zero`]); character is Smooth.
+    PoleZero,
+    /// Comb II: a feedback comb reading two taps, the second at a second
+    /// frequency character sets, up to two octaves above.
+    Comb2,
+    /// Expander multimode: a four-pole ladder whose taps mix into low-pass
+    /// (character 0), notch (0.5) and high-pass (1).
+    ExpanderMultimode,
+    /// Expander band-pass: the four-pole ladder's band-pass mix. Character
+    /// does nothing.
+    ExpanderBandPass,
+    /// K35: Sallen–Key low-pass and high-pass with a saturating feedback
+    /// amplifier; character is LP/HP, low-pass at 0 (the default).
+    K35,
 }
 
 /// Which group a type belongs to.
@@ -386,6 +508,9 @@ pub enum FilterGroup {
     Flanges,
     /// Everything else.
     Misc,
+    /// The later group: morphing, DJ, diffuser, ladder characters,
+    /// pole-zero, Comb II, expanders and K35.
+    Extended,
 }
 
 /// How a type's resonance control maps onto its structure.
@@ -401,6 +526,8 @@ enum Law {
     ZeroDelayLadder,
     /// A feedback gain rising linearly to this (signed) value.
     Gain(f32),
+    /// A value moving linearly from the first at 0 to the second at 1.
+    Linear(f32, f32),
 }
 
 /// What a type is, in one place.
@@ -580,11 +707,34 @@ impl FilterType {
         Self::ShriekBp,
     ];
 
-    /// Every type: the Normal, Multi, Flanges and Misc groups in turn.
-    pub const ALL: [Self; 96] = {
-        let mut all = [Self::Lp6; 96];
+    /// The Extended group, in menu order.
+    pub const EXTENDED: [Self; 12] = [
+        Self::BuzzMorph,
+        Self::DjSweep,
+        Self::Diffuser,
+        Self::TransistorLadder,
+        Self::DiodeLadder,
+        Self::CleanLadder,
+        Self::DrivenLadder,
+        Self::PoleZero,
+        Self::Comb2,
+        Self::ExpanderMultimode,
+        Self::ExpanderBandPass,
+        Self::K35,
+    ];
+
+    /// Every type: the Normal, Multi, Flanges, Misc and Extended groups in
+    /// turn.
+    pub const ALL: [Self; 108] = {
+        let mut all = [Self::Lp6; 108];
         let mut at = 0;
-        let groups: [&[Self]; 4] = [&Self::NORMAL, &Self::MULTI, &Self::FLANGES, &Self::MISC];
+        let groups: [&[Self]; 5] = [
+            &Self::NORMAL,
+            &Self::MULTI,
+            &Self::FLANGES,
+            &Self::MISC,
+            &Self::EXTENDED,
+        ];
         let mut g = 0;
         while g < groups.len() {
             let mut i = 0;
@@ -600,7 +750,7 @@ impl FilterType {
 
     #[allow(clippy::too_many_lines)]
     const fn info(self) -> Info {
-        use FilterGroup::{Flanges, Misc, Multi, Normal};
+        use FilterGroup::{Extended, Flanges, Misc, Multi, Normal};
         const fn i(
             name: &'static str,
             group: FilterGroup,
@@ -628,6 +778,8 @@ impl FilterType {
         const DAMPING: Option<&str> = Some("damping");
         const COMB_HZ: Option<&str> = Some("comb frequency");
         const FB_CUT: Option<&str> = Some("feedback cutoff");
+        const SMOOTH: Option<&str> = Some("smooth");
+        const DIODE: Law = Law::Gain(extended::DIODE_K * extended::DIODE_OVERSHOOT);
         let lp24 = Law::Svf(K_BUTTERWORTH_4[1], f32::NEG_INFINITY);
         let lp18 = Law::Svf(K_BUTTERWORTH_3, f32::NEG_INFINITY);
         const fn comb(negative: bool) -> Law {
@@ -800,6 +952,55 @@ impl FilterType {
             Self::CombFeedbackBp2 => i("comb-feedback-bp2", Misc, 12, comb(true), false, COMB_HZ),
             Self::ShriekLp => i("shriek-lp", Misc, 12, LH, true, FB_CUT),
             Self::ShriekBp => i("shriek-bp", Misc, 12, BAND_LAW, true, FB_CUT),
+            Self::BuzzMorph => i("buzz-morph", Extended, 12, LH, true, MORPH),
+            Self::DjSweep => i(
+                "dj-sweep",
+                Extended,
+                12,
+                Law::Linear(K_BUTTERWORTH_2, extended::DJ_K_MIN),
+                false,
+                None,
+            ),
+            Self::Diffuser => i(
+                "diffuser",
+                Extended,
+                0,
+                Law::Linear(extended::DIFFUSER_K[0], extended::DIFFUSER_K[1]),
+                false,
+                Some("stages"),
+            ),
+            Self::TransistorLadder => {
+                i("transistor-ladder", Extended, 24, Law::Ladder, true, SMOOTH)
+            }
+            Self::DiodeLadder => i("diode-ladder", Extended, 24, DIODE, true, SMOOTH),
+            Self::CleanLadder => i("clean-ladder", Extended, 24, DIODE, true, SMOOTH),
+            Self::DrivenLadder => i(
+                "driven-ladder",
+                Extended,
+                24,
+                Law::Ladder,
+                true,
+                Some("overdrive"),
+            ),
+            Self::PoleZero => i("pole-zero", Extended, 0, Law::None, false, SMOOTH),
+            Self::Comb2 => i(
+                "comb-2",
+                Extended,
+                0,
+                Law::Gain(COMB_FEEDBACK_MAX),
+                false,
+                Some("second frequency"),
+            ),
+            Self::ExpanderMultimode => i("expander-mm", Extended, 24, Law::Ladder, true, MORPH),
+            Self::ExpanderBandPass => i("expander-bp", Extended, 24, Law::Ladder, true, None),
+            Self::K35 => i(
+                "k35",
+                Extended,
+                12,
+                Law::Gain(extended::K35_MAX),
+                true,
+                Some("LP/HP"),
+            ),
         }
     }
 
@@ -873,14 +1074,16 @@ impl FilterType {
                     | Self::CombFeedbackBp1
                     | Self::CombFeedbackLp2
                     | Self::CombFeedbackBp2
+                    | Self::Comb2
             )
     }
 
     /// The resonance law: for the state-variable types, the resonant
     /// stage's damping (`k`, 1/Q) at `resonance` from 0 to 1; for the
     /// ladders, their feedback gain; for the comb, flanger, phaser and
-    /// multi-comb types, the feedback gain, negative for the negative
-    /// types. Without saturation, this is the value the analogue prototype
+    /// multi-comb types, Comb II, the diode ladders and the K35, the
+    /// feedback gain, negative for the negative types; for the DJ sweep and
+    /// the diffuser's stages, their damping. Without saturation, this is the value the analogue prototype
     /// has. Types where resonance does nothing return 0.
     #[must_use]
     pub fn feedback(self, resonance: f32) -> f32 {
@@ -891,6 +1094,7 @@ impl FilterType {
             Law::ZeroDelayLadder => r * ZERO_DELAY_LADDER_MAX,
             Law::Svf(k0, floor) => svf_k(k0, floor, r),
             Law::Gain(top) => r * top,
+            Law::Linear(from, to) => from + r * (to - from),
         }
     }
 }
@@ -935,11 +1139,15 @@ pub struct VoiceParams {
     pub mix: f32,
     /// Output gain, linear, after the mix.
     pub level: f32,
+    /// The pole-zero filter's X, 0 to 1.
+    pub morph_x: f32,
+    /// The pole-zero filter's Y, 0 to 1.
+    pub morph_y: f32,
 }
 
 impl Default for VoiceParams {
     /// Resonance 10 %, no drive, saturation or character, no offset, fully
-    /// filtered, unity level.
+    /// filtered, unity level, X and Y at 0 (the pole-zero filter's state 1).
     fn default() -> Self {
         Self {
             resonance: 0.1,
@@ -949,8 +1157,16 @@ impl Default for VoiceParams {
             stereo_offset: 0.0,
             mix: 1.0,
             level: 1.0,
+            morph_x: 0.0,
+            morph_y: 0.0,
         }
     }
+}
+
+/// The pole-zero X and Y a bank smooths towards, for one voice.
+fn morph_targets_of(params: &VoiceParams) -> [f32; extended::MORPH] {
+    let unit = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+    [unit(params.morph_x), unit(params.morph_y)]
 }
 
 /// Indices of the smoothed settings.
@@ -1025,6 +1241,12 @@ pub struct FilterBank {
     ring: usize,
     /// Where the next frame is written in every ring.
     cursor: usize,
+    /// The pole-zero X and Y: per voice, then per slot.
+    morph_targets: [Vec<f32>; extended::MORPH],
+    morph_smoothed: [Vec<f32>; extended::MORPH],
+    /// The pole-zero design, and the form the kernel runs.
+    pole_zero_design: PoleZeroDesign,
+    pole_zero: pole_zero::Table,
 }
 
 impl FilterBank {
@@ -1071,6 +1293,8 @@ impl FilterBank {
         };
         let targets = targets_of(&VoiceParams::default());
         let ring = lines::ring_len(sample_rate);
+        let morph = morph_targets_of(&VoiceParams::default());
+        let design = PoleZeroDesign::default();
         let mut bank = Self {
             simd,
             voices,
@@ -1086,6 +1310,10 @@ impl FilterBank {
             delay: vec![0.0; channels * stride * ring],
             ring,
             cursor: 0,
+            morph_targets: std::array::from_fn(|i| vec![morph[i]; stride]),
+            morph_smoothed: std::array::from_fn(|i| vec![morph[i]; channels * stride]),
+            pole_zero_design: design,
+            pole_zero: pole_zero::Table::of(&design),
         };
         bank.reset();
         bank
@@ -1136,6 +1364,19 @@ impl FilterBank {
         }
     }
 
+    /// Sets the pole-zero filter's design, which every voice shares. It
+    /// takes effect at once, without clearing state; allocates nothing.
+    pub fn set_pole_zero(&mut self, design: &PoleZeroDesign) {
+        self.pole_zero_design = *design;
+        self.pole_zero = pole_zero::Table::of(design);
+    }
+
+    /// The pole-zero filter's design.
+    #[must_use]
+    pub fn pole_zero(&self) -> &PoleZeroDesign {
+        &self.pole_zero_design
+    }
+
     /// Sets clean drive: the clipper's input 24 dB lower and its output
     /// 24 dB higher, for less saturation at the same gain.
     pub fn set_clean_drive(&mut self, clean: bool) {
@@ -1178,6 +1419,9 @@ impl FilterBank {
         for (i, value) in targets_of(params).into_iter().enumerate() {
             self.targets[i][voice] = value;
         }
+        for (i, value) in morph_targets_of(params).into_iter().enumerate() {
+            self.morph_targets[i][voice] = value;
+        }
     }
 
     /// Starts voice `voice` afresh, as at a note-on: its filter state
@@ -1193,6 +1437,9 @@ impl FilterBank {
             let slot = c * self.stride + voice;
             for i in 0..PARAMS {
                 self.smoothed[i][slot] = self.targets[i][voice];
+            }
+            for i in 0..extended::MORPH {
+                self.morph_smoothed[i][slot] = self.morph_targets[i][voice];
             }
             for s in &mut self.state {
                 s[slot] = 0.0;
@@ -1210,6 +1457,10 @@ impl FilterBank {
         for c in 0..self.channels {
             for i in 0..PARAMS {
                 let (to, from) = (&mut self.smoothed[i], &self.targets[i]);
+                to[c * self.stride..(c + 1) * self.stride].copy_from_slice(from);
+            }
+            for i in 0..extended::MORPH {
+                let (to, from) = (&mut self.morph_smoothed[i], &self.morph_targets[i]);
                 to[c * self.stride..(c + 1) * self.stride].copy_from_slice(from);
             }
         }
@@ -1248,7 +1499,72 @@ impl FilterBank {
             "the audio holds as many frames as the pitch buffer"
         );
         let simd = self.simd;
-        self.dispatch(simd.then(simd::level), pitch, audio, frames);
+        let voices = self.voices;
+        self.dispatch(simd.then(simd::level), voices, pitch, None, audio, frames);
+    }
+
+    /// As [`process`](Self::process), for the first `voices` voices only
+    /// (rounded up to a whole group of lanes): a voice engine whose sounding
+    /// voices are the lowest passes how many it has, and the voices above
+    /// keep their state untouched. The buffers keep the bank's full layout.
+    /// The Extended group's types process every voice.
+    ///
+    /// # Panics
+    ///
+    /// As [`process`](Self::process).
+    pub fn process_voices(&mut self, voices: usize, pitch: &[f32], audio: &mut [f32]) {
+        assert_eq!(
+            pitch.len() % self.stride,
+            0,
+            "the pitch buffer holds a whole number of frames"
+        );
+        let frames = pitch.len() / self.stride;
+        assert_eq!(
+            audio.len(),
+            frames * self.channels * self.stride,
+            "the audio holds as many frames as the pitch buffer"
+        );
+        let simd = self.simd;
+        let voices = voices.min(self.voices);
+        self.dispatch(simd.then(simd::level), voices, pitch, None, audio, frames);
+    }
+
+    /// As [`process`](Self::process), with the pole-zero filter's X and Y
+    /// modulated at audio rate: `x` and `y` are laid out as `pitch`, and
+    /// each value is added to its voice's [`VoiceParams::morph_x`] or
+    /// [`VoiceParams::morph_y`], the sum clamped to 0 to 1. Other types
+    /// ignore them.
+    ///
+    /// # Panics
+    ///
+    /// As [`process`](Self::process), or if `x` or `y` isn't as long as
+    /// `pitch`.
+    pub fn process_xy(&mut self, pitch: &[f32], x: &[f32], y: &[f32], audio: &mut [f32]) {
+        assert!(
+            x.len() == pitch.len() && y.len() == pitch.len(),
+            "X and Y hold as many values as the pitch buffer"
+        );
+        assert_eq!(
+            pitch.len() % self.stride,
+            0,
+            "the pitch buffer holds a whole number of frames"
+        );
+        let frames = pitch.len() / self.stride;
+        assert_eq!(
+            audio.len(),
+            frames * self.channels * self.stride,
+            "the audio holds as many frames as the pitch buffer"
+        );
+        let simd = self.simd;
+        let voices = self.voices;
+        self.dispatch(
+            simd.then(simd::level),
+            voices,
+            pitch,
+            Some((x, y)),
+            audio,
+            frames,
+        );
     }
 
     /// As [`process`](Self::process), with SIMD lanes at `level`, for tests
@@ -1265,7 +1581,8 @@ impl FilterBank {
         assert_eq!(pitch.len() % self.stride, 0);
         let frames = pitch.len() / self.stride;
         assert_eq!(audio.len(), frames * self.channels * self.stride);
-        self.dispatch(Some(level), pitch, audio, frames)
+        let voices = self.voices;
+        self.dispatch(Some(level), voices, pitch, None, audio, frames)
     }
 
     /// Runs the block with this bank's type, scalar or at `level`. Each type
@@ -1274,7 +1591,9 @@ impl FilterBank {
     fn dispatch(
         &mut self,
         level: Option<Level>,
+        voices: usize,
         pitch: &[f32],
+        xy: Option<(&[f32], &[f32])>,
         audio: &mut [f32],
         frames: usize,
     ) -> bool {
@@ -1288,12 +1607,14 @@ impl FilterBank {
         fn go<const N: usize, T: Topology<N>>(
             bank: &mut FilterBank,
             level: Option<Level>,
+            voices: usize,
             pitch: &[f32],
             audio: &mut [f32],
             frames: usize,
         ) -> bool {
             let run = Run::<N, T> {
                 bank,
+                voices,
                 pitch,
                 audio,
                 frames,
@@ -1406,8 +1727,9 @@ impl FilterBank {
             F::CombFeedbackBp2 => go::<S, CombFeedback<true, true>>,
             F::ShriekLp => go::<S, Shriek<false>>,
             F::ShriekBp => go::<S, Shriek<true>>,
+            _ => return extended::dispatch(self, level, pitch, xy, audio, frames),
         };
-        run(self, level, pitch, audio, frames)
+        run(self, level, voices, pitch, audio, frames)
     }
 }
 
@@ -1426,6 +1748,8 @@ pub fn hertz_of(pitch: f32, reference: f32) -> f32 {
 /// One call of [`FilterBank::process`], as a SIMD kernel.
 struct Run<'a, const N: usize, T> {
     bank: &'a mut FilterBank,
+    /// The voices to process, from the first.
+    voices: usize,
     pitch: &'a [f32],
     audio: &'a mut [f32],
     frames: usize,
@@ -1454,7 +1778,7 @@ impl<const N: usize, T: Topology<N>> Run<'_, N, T> {
     #[inline(always)]
     fn go<L: Lane>(self) {
         let bank = self.bank;
-        let groups = bank.voices.div_ceil(L::LANES);
+        let groups = self.voices.div_ceil(L::LANES);
         let alpha = 1.0 - (-1.0 / (SMOOTHING_SECONDS * bank.rate)).exp();
         let clean = 10f32.powf(-CLEAN_DB / 20.0);
         for c in 0..bank.channels {

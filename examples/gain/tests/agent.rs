@@ -126,6 +126,10 @@ fn an_agent_drives_the_gain_through_its_own_server() {
         );
         let guide = client.read_resource("lspk://guide").expect("the guide");
         assert!(guide.contains("Agent guide: Example Gain"), "{guide}");
+        assert!(
+            client.read_resource("lspk://plugin-guide").is_err(),
+            "it has no guide of its own"
+        );
 
         let areas = call(client, "list_commands", json!({}));
         assert_eq!(

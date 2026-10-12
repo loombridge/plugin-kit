@@ -3,7 +3,8 @@
 //! self-oscillation; for every type in every group, stability across
 //! every setting and sample rate, block-size invariance, SIMD against
 //! scalar, cutoff sample by sample and no allocation; and the controls'
-//! behaviour. The other groups' responses are in `filter_groups.rs`.
+//! behaviour. The other groups' responses are in `filter_groups.rs` and
+//! `filter_extended.rs`.
 //!
 //! Spec rules are cited as `engine-core Rn`.
 
@@ -420,6 +421,11 @@ fn every_misc_setting_is_stable_at_every_sample_rate() {
     stable(&FilterType::MISC);
 }
 
+#[test]
+fn every_extended_setting_is_stable_at_every_sample_rate() {
+    stable(&FilterType::EXTENDED);
+}
+
 /// Every type in `kinds` stays bounded at every cutoff, resonance and
 /// setting, from 44.1 kHz to 192 kHz oversampled 4 times, with cutoff
 /// swept at audio rate and loud input.
@@ -451,6 +457,8 @@ fn stable(kinds: &[FilterType]) {
                             saturation: corner(3),
                             character: [0.0, 0.5, 1.0, 0.8][(v / 4 + v) % 4],
                             stereo_offset: 24.0 * (corner(1) - 0.5),
+                            morph_x: corner(0),
+                            morph_y: corner(1),
                             ..VoiceParams::default()
                         },
                     );
@@ -520,6 +528,8 @@ fn varied(v: usize, step: usize) -> VoiceParams {
         stereo_offset: 6.0 * x - 3.0,
         mix: 0.5 + 0.5 * x,
         level: 0.5 + x,
+        morph_x: x,
+        morph_y: 1.0 - x * x,
     }
 }
 
@@ -566,6 +576,50 @@ fn output_is_the_same_whatever_the_block_sizes() {
             for size in [1, 3, 64, 512] {
                 let blocks = run_in_blocks(bank.clone(), &pitch, &audio, size);
                 assert!(whole == blocks, "{kind}, simd {simd}, blocks of {size}");
+            }
+        }
+    }
+}
+
+// A voice engine processes only its sounding voices: the voices below the
+// span come out as a whole bank's do, and those above keep their audio and
+// state untouched.
+#[test]
+fn a_span_of_voices_processes_those_voices_alone() {
+    const VOICES: usize = 32;
+    for simd in [false, true] {
+        let make = || {
+            let mut bank = if simd {
+                FilterBank::new(RATE, VOICES, 2)
+            } else {
+                FilterBank::scalar(RATE, VOICES, 2)
+            };
+            bank.set_type(FilterType::Ladder24);
+            for v in 0..VOICES {
+                bank.reset_voice(v, &varied(v, 0));
+            }
+            bank
+        };
+        let mut whole = make();
+        let mut span = make();
+        let (pitch, audio) = test_input(&whole, 600, 11);
+        let stride = whole.stride();
+        let mut all = audio.clone();
+        whole.process(&pitch, &mut all);
+        let mut some = audio.clone();
+        span.process_voices(5, &pitch, &mut some);
+        let lanes = if simd { 16 } else { 1 };
+        let reached = 5usize.div_ceil(lanes) * lanes;
+        for f in 0..600 {
+            for c in 0..2 {
+                for v in 0..VOICES {
+                    let i = (f * 2 + c) * stride + v;
+                    let expected = if v < reached { all[i] } else { audio[i] };
+                    assert!(
+                        some[i] == expected || v >= 5 && v < reached,
+                        "simd {simd}, frame {f}, voice {v}"
+                    );
+                }
             }
         }
     }
@@ -648,7 +702,12 @@ fn processing_stays_off_the_heap() {
 // the output from exactly that frame.
 #[test]
 fn cutoff_follows_the_pitch_buffer_sample_by_sample() {
-    for kind in FilterType::ALL {
+    // The pole-zero filter's default design is flat, so cutoff has nothing
+    // to move; filter_extended.rs tests it with points.
+    for kind in FilterType::ALL
+        .into_iter()
+        .filter(|&k| k != FilterType::PoleZero)
+    {
         let mut a = bank(kind, RATE, &VoiceParams::default());
         let mut b = a.clone();
         let input = signal::noise(5, 512, 0.5);

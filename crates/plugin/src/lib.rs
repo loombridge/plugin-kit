@@ -244,6 +244,14 @@ pub trait Plugin: Sized + 'static {
         None
     }
 
+    /// The plug-in's own guide for agents, in Markdown: its modules, how
+    /// sound flows through them, and how to get good results from it. The
+    /// agent interface serves it as a resource beside the kit's guide.
+    /// `None` leaves agents the kit's guide alone.
+    fn guide(&self) -> Option<String> {
+        None
+    }
+
     /// The plug-in's editor, if it has one: asked for once, as the
     /// instance starts, and kept for its life while the host opens and
     /// closes its window. It should hold no window until

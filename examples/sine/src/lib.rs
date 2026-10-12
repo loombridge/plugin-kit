@@ -89,6 +89,13 @@ impl Plugin for Sine {
         params()
     }
 
+    fn guide(&self) -> Option<String> {
+        Some(format!(
+            "# {NAME}\n\nEach note plays a pure sine at its key's equal-tempered pitch, \
+             with a short attack and release. `Level` sets how loud every note plays.\n"
+        ))
+    }
+
     fn summary(&self) -> Option<String> {
         let level = self.host.param(LEVEL)?;
         Some(format!(

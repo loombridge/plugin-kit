@@ -451,6 +451,7 @@ pub struct ParamSpace {
 pub struct SpaceBuilder {
     globals: Vec<ParamDescriptor>,
     groups: Vec<Group>,
+    defaults: Vec<(ParamId, f64)>,
 }
 
 impl SpaceBuilder {
@@ -469,6 +470,16 @@ impl SpaceBuilder {
             kind,
             instances: instances.iter().map(|i| (*i).to_owned()).collect(),
         });
+        self
+    }
+
+    /// Gives one instance of a fixed module its own default for one
+    /// parameter, by the parameter's ID: where instances differ in a new
+    /// patch, as a synthesiser's first oscillator is on and the others off.
+    /// The module type's default stays every other instance's.
+    #[must_use]
+    pub fn instance_default(mut self, id: ParamId, default: f64) -> Self {
+        self.defaults.push((id, default));
         self
     }
 
@@ -504,8 +515,9 @@ impl SpaceBuilder {
     /// A broken rule, named: a module number out of range or used twice, a
     /// parameter numbered out of range or twice in its module, a global ID
     /// outside the flat space, too many instances, a slot without choices,
-    /// a name with a quote in it, or a descriptor that breaks its own rules
-    /// ([`ParamDescriptor::check`]).
+    /// a name with a quote in it, a descriptor that breaks its own rules
+    /// ([`ParamDescriptor::check`]), or an instance default for a parameter
+    /// that isn't a fixed module's or that its descriptor refuses.
     pub fn build(self) -> Result<ParamSpace, String> {
         let mut groups = self.groups;
         let mut seen_modules = Vec::new();
@@ -627,6 +639,19 @@ impl SpaceBuilder {
                     }
                 }
             }
+        }
+        for (id, default) in &self.defaults {
+            let Some((_, descriptor)) = entries
+                .iter_mut()
+                .find(|(entry, d)| d.id == *id && matches!(entry, Entry::Fixed { .. }))
+            else {
+                return Err(format!(
+                    "an instance default names {}, which isn't a fixed module's parameter",
+                    id.0
+                ));
+            };
+            descriptor.default = *default;
+            descriptor.check()?;
         }
         let mut by_id: Vec<(ParamId, usize)> = entries
             .iter()
@@ -1136,6 +1161,39 @@ mod tests {
                 30.0,
                 ParamUnit::Percent,
             ))
+    }
+
+    #[test]
+    fn an_instance_can_have_its_own_default() {
+        let b_pitch = ParamAddress::new(1, 1, 2).id();
+        let space = ParamSpace::builder()
+            .module(osc(), &["A", "B"])
+            .instance_default(b_pitch, 7.0)
+            .build()
+            .expect("a valid space");
+        let default = |id: ParamId| {
+            space
+                .descriptors()
+                .into_iter()
+                .find(|d| d.id == id)
+                .map(|d| d.default)
+        };
+        assert_eq!(default(ParamAddress::new(1, 0, 2).id()), Some(0.0));
+        assert_eq!(default(b_pitch), Some(7.0));
+        let refused = |id: ParamId, value: f64| {
+            ParamSpace::builder()
+                .global(ParamDescriptor::gain(ParamId(1), "Volume", 6.0, 0.0))
+                .module(osc(), &["A", "B"])
+                .instance_default(id, value)
+                .build()
+                .is_err()
+        };
+        assert!(refused(b_pitch, 99.0), "outside its range");
+        assert!(refused(ParamId(1), 0.5), "a global, not a module's");
+        assert!(
+            refused(ParamAddress::new(1, 2, 2).id(), 0.0),
+            "no such instance"
+        );
     }
 
     fn space() -> ParamSpace {

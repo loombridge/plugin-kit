@@ -1302,6 +1302,8 @@ dependencies = [
  "lspk-params",
  "lspk-rt",
  "lspk-test",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1372,6 +1374,7 @@ version = "0.0.0"
 dependencies = [
  "schemars",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
