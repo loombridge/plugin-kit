@@ -27,6 +27,7 @@ clack-plugin = { version = "=0.2.0", optional = true }
 clack-extensions = { version = "=0.2.0", optional = true, features = [
     "clack-plugin",
     "audio-ports",
+    "gui",
     "latency",
     "note-ports",
     "params",

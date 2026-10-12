@@ -54,6 +54,10 @@ impl Plugin for Gain {
         params()
     }
 
+    fn editor(&mut self) -> Option<Box<dyn lspk_plugin::Editor>> {
+        Some(Box::new(lspk_ui::generic_editor(NAME, &params())))
+    }
+
     fn activate(
         &mut self,
         config: &ProcessConfig,

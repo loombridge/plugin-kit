@@ -16,6 +16,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 lspk-params.workspace = true
 lspk-plugin = { workspace = true, features = ["clap"] }
+# The generic editor: every parameter drawn from its descriptor.
+lspk-ui.workspace = true
 
 [dev-dependencies]
 lspk-rt.workspace = true
