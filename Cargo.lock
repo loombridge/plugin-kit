@@ -1479,6 +1479,7 @@ version = "0.0.0"
 name = "lspk-wavetable"
 version = "0.0.0"
 dependencies = [
+ "lspk-dsp",
  "lspk-rt",
  "lspk-test",
  "realfft",

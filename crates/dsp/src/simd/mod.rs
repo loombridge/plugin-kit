@@ -55,6 +55,15 @@
 //! Results for NaN inputs, and the sign of a zero from `min` or `max` of
 //! zeros of different signs, are unspecified.
 //!
+//! # Integer lanes
+//!
+//! Each lane type has a companion of `u32` lanes, [`F32s::U32s`], for the
+//! work audio code does in fixed point: wrapping phase accumulators, table
+//! indices, bit patterns. Integer operations, the conversions between the
+//! two and [`F32s::gather`] give the same bits on every path; so do
+//! [`floor`](F32s::floor) and the [`exp2`] built on them, whose error the
+//! tests bound.
+//!
 //! # Choosing the level
 //!
 //! [`level`] detects the CPU's features on its first call and remembers
@@ -131,6 +140,7 @@ macro_rules! lane_ops {
     };
 }
 
+mod math;
 #[cfg(target_arch = "aarch64")]
 mod neon;
 mod portable;
@@ -264,6 +274,56 @@ pub fn level() -> Level {
     }
 }
 
+pub use math::exp2;
+
+/// Lanes of `u32`, operated on together, the companion of an [`F32s`]
+/// type with the same number of lanes. Arithmetic wraps, as a phase
+/// accumulator wants.
+pub trait U32s: Copy + Send + Sync + 'static {
+    /// How many lanes it holds.
+    const LANES: usize;
+
+    /// Every lane `value`.
+    fn splat(value: u32) -> Self;
+    /// The first [`LANES`](Self::LANES) values of `from`.
+    ///
+    /// # Panics
+    ///
+    /// If `from` is shorter.
+    fn load(from: &[u32]) -> Self;
+    /// Writes its lanes to the first [`LANES`](Self::LANES) values of `to`.
+    ///
+    /// # Panics
+    ///
+    /// If `to` is shorter.
+    fn store(self, to: &mut [u32]);
+    /// Each lane pair added, wrapping.
+    #[must_use]
+    fn wrapping_add(self, other: Self) -> Self;
+    /// Each lane pair subtracted, wrapping.
+    #[must_use]
+    fn wrapping_sub(self, other: Self) -> Self;
+    /// The low 32 bits of each lane pair's product.
+    #[must_use]
+    fn wrapping_mul(self, other: Self) -> Self;
+    /// The high 32 bits of each lane pair's 64-bit product: `a × b >> 32`.
+    #[must_use]
+    fn mul_high(self, other: Self) -> Self;
+    /// Each lane shifted left by `N` bits, from 0 to 31.
+    #[must_use]
+    fn shl<const N: i32>(self) -> Self;
+    /// Each lane shifted right by `N` bits, from 1 to 31, filling with
+    /// zeros.
+    #[must_use]
+    fn shr<const N: i32>(self) -> Self;
+    /// The smaller of each lane pair, as unsigned numbers.
+    #[must_use]
+    fn min(self, other: Self) -> Self;
+    /// The larger of each lane pair, as unsigned numbers.
+    #[must_use]
+    fn max(self, other: Self) -> Self;
+}
+
 /// Lanes of `f32`, operated on together. Arithmetic works lane by lane.
 pub trait F32s:
     Copy
@@ -283,6 +343,8 @@ pub trait F32s:
     const LANES: usize;
     /// The level it runs at.
     const LEVEL: Level;
+    /// Its companion integer lanes.
+    type U32s: U32s;
 
     /// Every lane `value`.
     fn splat(value: f32) -> Self;
@@ -316,6 +378,65 @@ pub trait F32s:
     /// Every lane added up.
     #[must_use]
     fn sum(self) -> f32;
+    /// Each lane rounded down to a whole number.
+    #[must_use]
+    fn floor(self) -> Self;
+    /// Each lane's bits.
+    #[must_use]
+    fn to_bits(self) -> Self::U32s;
+    /// Lanes with these bits.
+    #[must_use]
+    fn from_bits(bits: Self::U32s) -> Self;
+    /// Each lane truncated towards zero, as an `i32`'s bits. Lanes outside
+    /// `i32`'s range give unspecified values.
+    #[must_use]
+    fn to_i32(self) -> Self::U32s;
+    /// Each integer lane, read as an `i32`, rounded to the nearest `f32`.
+    #[must_use]
+    fn from_i32(lanes: Self::U32s) -> Self;
+    /// For each lane, the `N` values of `table` from that lane's index on:
+    /// row `j` holds `table[index + j]`. An index past `table.len() − N` is
+    /// clamped to it, so the read never leaves the table.
+    ///
+    /// # Panics
+    ///
+    /// If `table` holds fewer than `N` values, or more than `i32::MAX`.
+    #[must_use]
+    fn gather<const N: usize>(table: &[f32], index: Self::U32s) -> [Self; N];
+}
+
+/// [`F32s::gather`] one lane at a time, for the paths without a gather
+/// instruction: `rows[j][i]` is `table[min(index[i], limit) + j]`.
+#[inline(always)]
+fn gather_lanes<const L: usize, const N: usize>(
+    table: &[f32],
+    index: [u32; L],
+    limit: u32,
+) -> [[f32; L]; N] {
+    debug_assert!(limit as usize + N <= table.len());
+    let mut rows = [[0.0; L]; N];
+    for (i, &at) in index.iter().enumerate() {
+        let at = at.min(limit) as usize;
+        // SAFETY: `at` is at most `limit`, which `gather_limit` made
+        // `table.len() − N`, so the `N` values from `at` are in the table.
+        let values = unsafe { &*table.as_ptr().add(at).cast::<[f32; N]>() };
+        for (row, &value) in rows.iter_mut().zip(values) {
+            row[i] = value;
+        }
+    }
+    rows
+}
+
+/// The largest index [`F32s::gather`] reads `N` values from in `table`,
+/// checking the table's size.
+#[inline(always)]
+fn gather_limit<const N: usize>(table: &[f32]) -> u32 {
+    assert!(
+        table.len() >= N && i32::try_from(table.len()).is_ok(),
+        "a gather of {N} from {} values",
+        table.len()
+    );
+    (table.len() - N) as u32
 }
 
 /// A computation written once for any lane type, run by [`dispatch`].

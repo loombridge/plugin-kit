@@ -39,6 +39,12 @@ impl Level {
     pub const fn stride(&self) -> usize {
         self.size + GUARD
     }
+
+    /// Where its first frame's samples start in [`Table::data`].
+    #[must_use]
+    pub const fn offset(&self) -> usize {
+        self.offset
+    }
 }
 
 /// The highest harmonic each level keeps, from all of a frame's 1,024
@@ -180,6 +186,13 @@ impl Table {
     #[must_use]
     pub fn levels(&self) -> &[Level] {
         &self.levels
+    }
+
+    /// Every level's spline coefficients, as [`Table`]'s layout describes:
+    /// for vector reads, which gather from it directly.
+    #[must_use]
+    pub fn data(&self) -> &[f32] {
+        &self.data
     }
 
     /// Memory the samples take, in bytes.

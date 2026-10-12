@@ -9,6 +9,8 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+# SIMD lanes for the oscillator's render across voices.
+lspk-dsp.workspace = true
 # The FFTs behind resampling, spectral morphing and the mipmaps, run off the
 # audio thread; pure Rust, as lspk-test's measurements use.
 realfft = "3.5.0"
