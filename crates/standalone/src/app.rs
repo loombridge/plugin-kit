@@ -84,6 +84,19 @@ impl HostBackend for Backend {
     fn values_changed(&self) {
         // The window reads the values every frame.
     }
+
+    fn waker(&self) -> Option<lspk_plugin::host::Waker> {
+        let requests = Arc::downgrade(&self.0);
+        Some(Arc::new(move || {
+            if let Some(requests) = requests.upgrade() {
+                requests.callback.store(true, Ordering::Relaxed);
+            }
+        }))
+    }
+
+    fn host_name(&self) -> Option<String> {
+        Some("Standalone".to_owned())
+    }
 }
 
 /// Where the audio stands.

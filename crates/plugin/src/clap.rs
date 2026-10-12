@@ -2,10 +2,10 @@
 //!
 //! [`export_clap!`](crate::export_clap) in a plug-in's `cdylib` crate makes
 //! it a CLAP plug-in with the `params`, `state`, `audio-ports`,
-//! `note-ports`, `latency` and `tail` extensions, and `gui` for a plug-in
-//! with an [`Editor`](crate::Editor). The glue between CLAP's
-//! calls and the [`Plugin`] and [`Processor`] traits allocates nothing,
-//! locks nothing and never blocks on the audio thread.
+//! `note-ports`, `latency`, `tail` and `track-info` extensions, and `gui`
+//! for a plug-in with an [`Editor`](crate::Editor). The glue between
+//! CLAP's calls and the [`Plugin`] and [`Processor`] traits allocates
+//! nothing, locks nothing and never blocks on the audio thread.
 //!
 //! What the host sees of each parameter: a continuous or gain parameter as
 //! its control's travel from 0 to 1, a stepped one as its whole-number
@@ -18,8 +18,8 @@ use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use clack_extensions::audio_ports::{
     AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
@@ -40,6 +40,9 @@ use clack_extensions::params::{
 };
 use clack_extensions::state::{HostState, PluginState, PluginStateImpl};
 use clack_extensions::tail::{PluginTail, PluginTailImpl, TailLength};
+use clack_extensions::track_info::{
+    HostTrackInfo, PluginTrackInfo, PluginTrackInfoImpl, TrackInfoBuffer,
+};
 use clack_plugin::entry::{DefaultPluginFactory, SinglePluginEntry};
 use clack_plugin::events::event_types::{
     NoteEndEvent, ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
@@ -67,7 +70,7 @@ use crate::editor::{
     Editor, EditorChanges, EditorContext, EditorHost, EditorSize, ParentWindow, WindowApi,
 };
 use crate::events::{Event, EventSource, Events, Note};
-use crate::host::{Edit, EventSink, Host, HostBackend, OutputEvent, ProcessContext};
+use crate::host::{Edit, EventSink, Host, HostBackend, OutputEvent, ProcessContext, Waker};
 use crate::params::ParamValues;
 use crate::{Plugin, ProcessConfig, ProcessStatus, Processor, Tail, state};
 
@@ -227,7 +230,8 @@ impl<P: Plugin> ClackPlugin for ClapPlugin<P> {
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<PluginLatency>()
-            .register::<PluginTail>();
+            .register::<PluginTail>()
+            .register::<PluginTrackInfo>();
         if P::INFO.notes.input || P::INFO.notes.output {
             builder.register::<PluginNotePorts>();
         }
@@ -263,6 +267,13 @@ impl<P: Plugin> DefaultPluginFactory for ClapPlugin<P> {
         let backend = ClapBackend {
             params: host.get_extension::<HostParams>(),
             state: host.get_extension::<HostState>(),
+            track_info: host.get_extension::<HostTrackInfo>(),
+            // SAFETY: as for `host` below: `ClapBackend`'s `Drop` empties
+            // the waker before the instance ends, so no thread reaches the
+            // handle after that.
+            waker: Arc::new(ClapWaker(Mutex::new(Some(unsafe {
+                host.with_arbitrary_lifetime().shared()
+            })))),
             // SAFETY: the handle lives only in this instance's `Host`, which
             // `ClapMainThread` disconnects when it's dropped, before the
             // instance ends; no call reaches the handle after that.
@@ -320,6 +331,29 @@ struct ClapBackend {
     host: HostMainThreadHandle<'static>,
     params: Option<HostParams>,
     state: Option<HostState>,
+    track_info: Option<HostTrackInfo>,
+    waker: Arc<ClapWaker>,
+}
+
+/// The host's thread-safe handle, for asking for a main-thread callback
+/// from any thread; emptied as the instance ends, after which it does
+/// nothing.
+struct ClapWaker(Mutex<Option<HostSharedHandle<'static>>>);
+
+impl ClapWaker {
+    fn wake(&self) {
+        // Never on an audio thread: only an agent server's threads and the
+        // main thread take this lock.
+        if let Some(host) = *self.0.lock().unwrap_or_else(PoisonError::into_inner) {
+            host.request_callback();
+        }
+    }
+}
+
+impl Drop for ClapBackend {
+    fn drop(&mut self) {
+        *self.waker.0.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
 }
 
 impl HostBackend for ClapBackend {
@@ -351,6 +385,24 @@ impl HostBackend for ClapBackend {
         if let Some(params) = &self.params {
             params.rescan(&self.host, ParamRescanFlags::VALUES);
         }
+    }
+
+    fn waker(&self) -> Option<Waker> {
+        let waker = Arc::clone(&self.waker);
+        Some(Arc::new(move || waker.wake()))
+    }
+
+    fn host_name(&self) -> Option<String> {
+        let name = self.host.name()?.to_string_lossy().trim().to_owned();
+        (!name.is_empty()).then_some(name)
+    }
+
+    fn track_name(&self) -> Option<String> {
+        let mut host = self.host;
+        let mut buffer = TrackInfoBuffer::new();
+        let info = self.track_info?.get(&mut host, &mut buffer)?;
+        let name = String::from_utf8_lossy(info.name()?).trim().to_owned();
+        (!name.is_empty()).then_some(name)
     }
 }
 
@@ -427,6 +479,14 @@ impl<'a, P: Plugin> PluginMainThread<'a, ClapShared<'a, P>> for ClapMainThread<'
         }
         if let Ok(mut plugin) = self.plugin.try_borrow_mut() {
             plugin.on_main_thread();
+        }
+    }
+}
+
+impl<P: Plugin> PluginTrackInfoImpl for ClapMainThread<'_, P> {
+    fn changed(&self) {
+        if let Ok(mut plugin) = self.plugin.try_borrow_mut() {
+            plugin.track_info_changed();
         }
     }
 }

@@ -446,6 +446,15 @@ fn the_plugin_asks_for_callbacks_and_restarts() {
     assert_eq!(CALLS.with(|c| *c.borrow()), 1);
     app.poll();
     assert_eq!(fake.opened(), 2, "the restart reopened the stream");
+
+    // The waker asks for the same callback from any thread.
+    let waker = app.plugin().host.waker().expect("a waker");
+    std::thread::spawn(move || waker())
+        .join()
+        .expect("a thread");
+    app.poll();
+    assert_eq!(CALLS.with(|c| *c.borrow()), 2);
+    assert_eq!(app.plugin().host.host_name().as_deref(), Some("Standalone"));
 }
 
 #[test]

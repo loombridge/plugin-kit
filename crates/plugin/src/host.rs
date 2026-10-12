@@ -33,7 +33,27 @@ pub trait HostBackend {
     /// Tells the host every parameter's value may have changed without an
     /// edit (after loading state), so it reads them again.
     fn values_changed(&self);
+    /// A way to ask for [`Plugin::on_main_thread`](crate::Plugin::on_main_thread)
+    /// from any thread, such as an agent server's, if the host offers one.
+    /// It must do nothing once the instance has gone.
+    fn waker(&self) -> Option<Waker> {
+        None
+    }
+    /// The host's name, such as `Bitwig Studio`, if it gives one.
+    fn host_name(&self) -> Option<String> {
+        None
+    }
+    /// The name of the track the instance is on, if the host reports it
+    /// (CLAP's `track-info`).
+    fn track_name(&self) -> Option<String> {
+        None
+    }
 }
+
+/// Asks the host, from any thread, to call
+/// [`Plugin::on_main_thread`](crate::Plugin::on_main_thread) soon: see
+/// [`Host::waker`]. Once the instance has gone it does nothing.
+pub type Waker = Arc<dyn Fn() + Send + Sync>;
 
 /// Why a parameter edit wasn't made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -216,6 +236,39 @@ impl Host {
     /// soon.
     pub fn request_callback(&self) {
         self.with_backend(|b| b.request_callback());
+    }
+
+    /// A way to ask for [`Plugin::on_main_thread`](crate::Plugin::on_main_thread)
+    /// from any thread, if the host offers one: an agent server's threads
+    /// wake the main thread with it when a request comes. It does nothing
+    /// once the instance has gone.
+    #[must_use]
+    pub fn waker(&self) -> Option<Waker> {
+        self.inner.backend.try_borrow().ok()?.as_deref()?.waker()
+    }
+
+    /// The host's name, such as `Bitwig Studio`, if it gives one.
+    #[must_use]
+    pub fn host_name(&self) -> Option<String> {
+        self.inner
+            .backend
+            .try_borrow()
+            .ok()?
+            .as_deref()?
+            .host_name()
+    }
+
+    /// The name of the track the instance is on, if the host reports it.
+    /// [`Plugin::track_info_changed`](crate::Plugin::track_info_changed)
+    /// says when it changes.
+    #[must_use]
+    pub fn track_name(&self) -> Option<String> {
+        self.inner
+            .backend
+            .try_borrow()
+            .ok()?
+            .as_deref()?
+            .track_name()
     }
 
     /// Tells the host the plug-in's own state has changed. Parameter edits

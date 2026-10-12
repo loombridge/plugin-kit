@@ -10,6 +10,9 @@
 //!   from its WAV attachment into an [`Output`], ready for [`crate::measure`]
 //!   and [`crate::golden`]; [`encode_wav`] makes such an attachment, for a
 //!   test program.
+//! - `serving` (the `hosts` feature): a client's calls on a thread of their
+//!   own while the CLAP test host calls the plug-in back on the main
+//!   thread, for a plug-in that serves its own agent server.
 //!
 //! ```ignore
 //! let mut client = lspk_test::agent::in_process(server, host)?;
@@ -45,6 +48,25 @@ pub fn in_process<P: Program>(
     let mut client = Client::new(InProcess::new(server, host));
     client.initialize("lspk-test")?;
     Ok(client)
+}
+
+/// Runs `calls` (a client's requests to a plug-in's own agent server) on a
+/// thread of their own, while `host` calls the plug-in back on the main
+/// thread as a host does when the server wakes it, and returns what
+/// `calls` returns. A panic in `calls` carries on here.
+#[cfg(feature = "hosts")]
+pub fn serving<T: Send + 'static>(
+    host: &mut crate::ClapTestHost,
+    calls: impl FnOnce() -> T + Send + 'static,
+) -> T {
+    let calls = std::thread::spawn(calls);
+    while !calls.is_finished() {
+        host.on_main_thread();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    calls
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 /// Checks every tool in `tools` (as [`Client::tools`] lists them) has a
