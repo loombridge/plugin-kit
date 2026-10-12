@@ -4,7 +4,7 @@ The plug-in kit is a set of Rust crates for building audio plug-ins: real-time s
 
 [Reagent](https://github.com/loombridge/reagent), a wavetable synthesiser, is the first plug-in built on it.
 
-The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands`, `lspk-agent`, `lspk-plugin` (with its CLAP, VST3 and Audio Unit v2 exports and editor hosting), `lspk-plugin-agent` (the agent interface inside a running plug-in), `lspk-ui` (editors embedded in the host's window, and a generic interface for any plug-in's parameters) and `lspk-test` (the headless test harness, with CLAP, VST3 and Audio Unit hosts) hold working code, every other crate is still a stub, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
+The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands`, `lspk-agent`, `lspk-dsp` (oversampling and the SIMD helpers so far), `lspk-plugin` (with its CLAP, VST3 and Audio Unit v2 exports and editor hosting), `lspk-plugin-agent` (the agent interface inside a running plug-in), `lspk-ui` (editors embedded in the host's window, and a generic interface for any plug-in's parameters) and `lspk-test` (the headless test harness, with CLAP, VST3 and Audio Unit hosts, and the performance harness) hold working code, every other crate is still a stub, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
 
 ## Crates
 
@@ -28,7 +28,7 @@ Every crate carries the prefix `lspk-`.
 | `lspk-plugin-agent` | The agent interface inside a running plug-in: its parameters and commands as tools, its own MCP server on loopback, discovery, checkpoints and previews it hears offline |
 | `lspk-clap-wrapper` | free-audio's [clap-wrapper](https://github.com/free-audio/clap-wrapper) and the SDK sources it needs (VST3 SDK, AudioUnitSDK), vendored and built with `cc`, which make the VST3 and Audio Unit v2 exports from the CLAP one |
 | `lspk-standalone` | The standalone app: any plug-in run as an application, with audio and MIDI device choice, the computer keyboard, settings kept between runs, and state files |
-| `lspk-test` | The headless test harness: renders, golden renders and null tests, measurements, format validators, a scripted MCP client |
+| `lspk-test` | The headless test harness: renders, golden renders and null tests, measurements, format validators, a scripted MCP client, benchmarks |
 
 Two example plug-ins under `examples/`, never published, show the `Plugin` trait at its smallest and prove the format exports: `lspk-example-gain`, a stereo gain, and `lspk-example-sine`, an eight-voice sine instrument. Each also builds as a standalone app (`src/main.rs`, one line), which `cargo xtask bundle` lays out beside its plug-in formats.
 
@@ -68,6 +68,14 @@ Two example plug-ins under `examples/`, never published, show the `Plugin` trait
    ```sh
    cargo xtask golden --update
    ```
+
+1. Every crate's benchmarks live in its `benches/perf.rs`: plug-in scenarios (CPU per block and per voice, idle cost, instance creation, state loading) and micro-benchmarks of hot paths. Time them all on your machine, with the results written as JSON under `target/bench/`:
+
+   ```sh
+   cargo xtask bench
+   ```
+
+   CI counts each benchmark's instructions on Linux and fails a pull request that makes any of them more than 3 % slower than `bench/baseline.json`; [AGENTS.md](AGENTS.md) explains how to update the baseline when a slowdown is intended.
 
 1. To try a plug-in's editor without a DAW, open it in the kit's small CLAP host, which embeds it as a DAW's device window does (with no argument, it hosts a built-in test plug-in with every kind of control; `--check` opens, resizes and closes it many times and reports the result):
 

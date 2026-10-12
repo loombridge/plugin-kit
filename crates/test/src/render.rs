@@ -446,6 +446,37 @@ impl<P: Plugin> Instance<P> {
         self.requests.take()
     }
 
+    /// Its state as a format saves it: every parameter's value, then the
+    /// plug-in's own bytes.
+    #[must_use]
+    pub fn save_state(&self) -> Vec<u8> {
+        lspk_plugin::state::encode(&self.values, &self.plugin.save_state())
+    }
+
+    /// Loads a state [`save_state`](Self::save_state) made, as a format
+    /// does: the parameters' values, then the plug-in's own bytes. While
+    /// it's active, the processor takes the values at the start of its next
+    /// block. A state the plug-in refuses changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// `bytes` isn't a state, or the plug-in refused it.
+    pub fn load_state(&mut self, bytes: &[u8]) -> Result<(), String> {
+        use lspk_plugin::state;
+        let decoded = state::decode(bytes).map_err(|e| e.to_string())?;
+        let before = state::encode(&self.values, &[]);
+        state::apply(&decoded, &self.values);
+        if let Err(error) = self.plugin.load_state(decoded.own) {
+            if let Ok(before) = state::decode(&before) {
+                state::apply(&before, &self.values);
+            }
+            return Err(error.to_string());
+        }
+        self.host
+            .state_loaded(self.is_active())
+            .map_err(|e| e.to_string())
+    }
+
     /// Activates it at `settings`, for blocks of up to `settings.block`
     /// frames.
     ///
@@ -652,7 +683,17 @@ impl<P: Plugin> Instance<P> {
         let mut run = || {
             let mut cx = ProcessContext::new(values, sink);
             let start = Instant::now();
-            let status = processor.process(&mut audio, &list, &mut cx);
+            let status = if crate::bench::counting_process() {
+                // Only `process` itself counts towards a benchmark's
+                // instructions, not the harness around it.
+                let mut status = ProcessStatus::Continue;
+                crate::bench::measured(&mut || {
+                    status = processor.process(&mut audio, &list, &mut cx);
+                });
+                status
+            } else {
+                processor.process(&mut audio, &list, &mut cx)
+            };
             (status, start.elapsed())
         };
         if lspk_rt::trap::is_installed() {
