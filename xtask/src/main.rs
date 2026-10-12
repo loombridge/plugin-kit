@@ -25,8 +25,9 @@ Tasks:
                  (maintainers' checkouts only; skipped without it)
   bundle <crate>...
                  Build each plug-in crate in release and lay it out in target/bundle as
-                 a .clap, a .vst3 and, on macOS, a .component (Audio Unit v2), signed
-                 ad hoc on macOS
+                 a .clap, a .vst3 and, on macOS, a .component (Audio Unit v2), and its
+                 standalone app if it has a <crate>-standalone binary (an .app on
+                 macOS, an executable elsewhere), signed ad hoc on macOS
   golden [--update] [NAME...]
                  Run every crate's golden suite (tests/golden.rs) against its references.
                  With --update, first remake the references whose renders changed (or

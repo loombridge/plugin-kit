@@ -1,0 +1,42 @@
+[package]
+name = "lspk-standalone"
+description = "The standalone app: any kit plug-in run as an application, with audio and MIDI device handling, settings and state files."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+# The plug-in's two halves, driven through their traits; no format export.
+lspk-plugin.workspace = true
+lspk-params.workspace = true
+# The audio thread's set-up and real-time sections.
+lspk-rt.workspace = true
+# The edit, MIDI and input queues, as lspk-plugin's own.
+rtrb = "0.4.0"
+# Audio devices: Core Audio, WASAPI and ALSA. The same release Beatlayer's
+# audio I/O uses.
+cpal = "0.18.2"
+# MIDI inputs: CoreMIDI, Windows' MIDI and ALSA sequencer.
+midir = "0.11.1"
+# The window: egui in a baseview window, drawn with the kit's interface
+# crate, at the egui-baseview release lspk-ui pins.
+lspk-ui.workspace = true
+egui-baseview = { version = "=0.8.1", default-features = false, features = [
+    "opengl",
+    "log",
+] }
+# Native dialogs for opening and saving state files; on Linux through the
+# desktop portal, with no GTK.
+rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] }
+# The settings file.
+serde = { version = "1.0.228", default-features = false, features = ["std", "derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+lspk-rt.workspace = true
+
+[lints]
+workspace = true
