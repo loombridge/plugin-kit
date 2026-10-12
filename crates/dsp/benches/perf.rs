@@ -5,7 +5,11 @@
 use std::hint::black_box;
 use std::process::ExitCode;
 
-use lspk_dsp::{FilterBank, FilterType, LinearSmoother, Oversampler, VoiceParams, simd};
+use lspk_dsp::envelope::{Timing, Trigger};
+use lspk_dsp::{
+    Envelope, EnvelopeBank, EnvelopeParams, FilterBank, FilterType, LinearSmoother, Oversampler,
+    VoiceParams, simd,
+};
 use lspk_test::bench::Suite;
 use lspk_test::signal;
 
@@ -13,7 +17,31 @@ use lspk_test::signal;
 const BLOCK: usize = 512;
 
 /// Voices in the filter benchmarks' banks.
-const VOICES: usize = 16;
+const FILTER_VOICES: usize = 16;
+
+/// Voices in the envelope benchmarks.
+const VOICES: usize = 32;
+
+/// Short stages, so a block crosses several of them: every stage, bent.
+const BUSY: EnvelopeParams = EnvelopeParams {
+    attack: 2.0,
+    hold: 1.0,
+    decay: 4.0,
+    sustain: 0.5,
+    release: 3.0,
+    attack_curve: 0.3,
+    ..EnvelopeParams::AMP
+};
+
+/// What happens to voice `voice` at the start of block `block`: notes 8
+/// blocks long, each voice's starting a block after the last's.
+fn envelope_event(block: usize, voice: usize) -> Option<bool> {
+    match (block + voice) % 8 {
+        0 => Some(true),
+        4 => Some(false),
+        _ => None,
+    }
+}
 
 fn main() -> ExitCode {
     let mut suite = Suite::new("lspk-dsp");
@@ -67,6 +95,88 @@ fn main() -> ExitCode {
         }
     });
 
+    // Envelopes, a block per call. One voice, scalar: the per-sample cost
+    // of a single envelope crossing stages.
+    suite.micro("envelope/one", BLOCK, || {
+        let mut envelope = Envelope::new(BUSY, Timing::new(48_000.0));
+        let mut out = vec![0.0; BLOCK];
+        let mut block = 0;
+        move || {
+            match envelope_event(block, 0) {
+                Some(true) => envelope.trigger(Trigger::New),
+                Some(false) => envelope.release(),
+                None => {}
+            }
+            block += 1;
+            envelope.process(&mut out);
+            black_box(&out);
+        }
+    });
+
+    // 32 voices with staggered notes, as 32 scalar envelopes and as one
+    // bank in SIMD lanes, so the two compare.
+    suite.micro("envelope/scalar-32", BLOCK, || {
+        let mut envelopes = vec![Envelope::new(BUSY, Timing::new(48_000.0)); VOICES];
+        let mut out = vec![0.0; BLOCK * VOICES];
+        let mut block = 0;
+        move || {
+            for (voice, (envelope, out)) in envelopes
+                .iter_mut()
+                .zip(out.as_chunks_mut::<BLOCK>().0)
+                .enumerate()
+            {
+                match envelope_event(block, voice) {
+                    Some(true) => envelope.trigger(Trigger::New),
+                    Some(false) => envelope.release(),
+                    None => {}
+                }
+                envelope.process(out);
+            }
+            block += 1;
+            black_box(&out);
+        }
+    });
+    suite.micro("envelope/simd-32", BLOCK, || {
+        let mut bank = EnvelopeBank::new(VOICES, BUSY, Timing::new(48_000.0));
+        let mut out = vec![0.0; BLOCK * bank.stride()];
+        let mut block = 0;
+        move || {
+            for voice in 0..VOICES {
+                match envelope_event(block, voice) {
+                    Some(true) => bank.trigger(voice, Trigger::New),
+                    Some(false) => bank.release(voice),
+                    None => {}
+                }
+            }
+            block += 1;
+            bank.process(&mut out);
+            black_box(&out);
+        }
+    });
+
+    // 32 voices holding their sustain, and 32 idle: what a bank costs when
+    // nothing moves.
+    suite.micro("envelope/sustain-32", BLOCK, || {
+        let mut bank = EnvelopeBank::new(VOICES, BUSY, Timing::new(48_000.0));
+        let mut out = vec![0.0; BLOCK * bank.stride()];
+        for voice in 0..VOICES {
+            bank.trigger(voice, Trigger::New);
+        }
+        bank.process(&mut out);
+        move || {
+            bank.process(&mut out);
+            black_box(&out);
+        }
+    });
+    suite.micro("envelope/idle-32", BLOCK, || {
+        let mut bank = EnvelopeBank::new(VOICES, BUSY, Timing::new(48_000.0));
+        let mut out = vec![0.0; BLOCK * bank.stride()];
+        move || {
+            bank.process(&mut out);
+            black_box(&out);
+        }
+    });
+
     // Every filter type over a block of 16 mono voices, each with its cutoff
     // swept at audio rate and its own resonance and drive: one voice at a
     // time (scalar), and in SIMD lanes across voices. Items are voice
@@ -74,16 +184,16 @@ fn main() -> ExitCode {
     for kind in FilterType::ALL {
         for simd in [false, true] {
             let name = format!("filter/{kind}/{}", if simd { "simd" } else { "scalar" });
-            suite.micro(&name, BLOCK * VOICES, move || {
+            suite.micro(&name, BLOCK * FILTER_VOICES, move || {
                 let mut bank = if simd {
-                    FilterBank::new(48_000.0, VOICES, 1)
+                    FilterBank::new(48_000.0, FILTER_VOICES, 1)
                 } else {
-                    FilterBank::scalar(48_000.0, VOICES, 1)
+                    FilterBank::scalar(48_000.0, FILTER_VOICES, 1)
                 };
                 bank.set_type(kind);
                 let stride = bank.stride();
-                for voice in 0..VOICES {
-                    let x = voice as f32 / VOICES as f32;
+                for voice in 0..FILTER_VOICES {
+                    let x = voice as f32 / FILTER_VOICES as f32;
                     bank.reset_voice(
                         voice,
                         &VoiceParams {

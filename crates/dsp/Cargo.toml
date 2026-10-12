@@ -13,7 +13,7 @@ publish.workspace = true
 lspk-params.workspace = true
 
 [dev-dependencies]
-# The allocation trap, for the filters' real-time tests.
+# The allocation trap, for the real-time tests.
 lspk-rt.workspace = true
 # The micro-benchmarks' suite format.
 lspk-test.workspace = true

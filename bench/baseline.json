@@ -1,6 +1,11 @@
 {
   "about": "Instructions each benchmark's measured region runs, counted by Callgrind on x86-64 Linux at the AVX2 SIMD level. CI fails a pull request that makes any of them more than 3 % higher; change them only with `cargo xtask bench --update-baseline --reason ...`, and say why in the pull request.",
   "instructions": {
+    "lspk-dsp/envelope/idle-32": 11272,
+    "lspk-dsp/envelope/one": 3534,
+    "lspk-dsp/envelope/scalar-32": 120781,
+    "lspk-dsp/envelope/simd-32": 28481,
+    "lspk-dsp/envelope/sustain-32": 11272,
     "lspk-dsp/filter/ladder-12/scalar": 1593254,
     "lspk-dsp/filter/ladder-12/simd": 220058,
     "lspk-dsp/filter/ladder-18/scalar": 1593254,
@@ -40,7 +45,7 @@
     "lspk-dsp/oversampler/2x": 502192,
     "lspk-dsp/oversampler/4x": 1503243,
     "lspk-dsp/oversampler/8x": 3505254,
-    "lspk-dsp/simd/mix": 363,
+    "lspk-dsp/simd/mix": 352,
     "lspk-dsp/smoother/glide": 7459,
     "lspk-example-gain/automation/create": 4687,
     "lspk-example-gain/automation/idle": 1810875,
@@ -50,17 +55,17 @@
     "lspk-example-gain/small-blocks/idle": 2059500,
     "lspk-example-gain/small-blocks/load-state": 1227,
     "lspk-example-gain/small-blocks/process": 1378556,
-    "lspk-example-sine/chord/create": 4967,
+    "lspk-example-sine/chord/create": 4979,
     "lspk-example-sine/chord/idle": 636375,
     "lspk-example-sine/chord/load-state": 1081,
     "lspk-example-sine/chord/process": 55302543,
-    "lspk-example-sine/one-voice/create": 4967,
+    "lspk-example-sine/one-voice/create": 4979,
     "lspk-example-sine/one-voice/idle": 636375,
     "lspk-example-sine/one-voice/load-state": 1081,
     "lspk-example-sine/one-voice/process": 7578149
   },
   "platform": "x86_64-linux",
-  "reason": "R1.9 adds 36 lspk-dsp filter micro-benchmarks (every filter type, scalar and SIMD). simd/mix moves from 352 to 363 instructions (+11) only because the bench binary's code changed around it; its kernel is unchanged. Counts from CI run 38277119912.",
+  "reason": "R1.9 adds 36 lspk-dsp filter micro-benchmarks (every filter type, scalar and SIMD), counted by CI; merged with R1.11's envelope benchmarks, whose counts and the rest are main's.",
   "simd": "avx2",
   "valgrind": "valgrind-3.22.0"
 }
