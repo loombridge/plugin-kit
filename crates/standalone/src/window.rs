@@ -88,11 +88,20 @@ struct Inner<P: Plugin> {
     layout: Layout,
     /// The window's size, in points, when last looked at.
     seen: (f64, f64),
+    /// The size last asked for, below the menu bar, until the window has
+    /// had a frame to take it.
+    asked: Option<(f64, f64)>,
+    /// The window's own view, where the screen's room is asked of it.
+    #[cfg(target_os = "macos")]
+    view: Option<std::ptr::NonNull<std::ffi::c_void>>,
     /// What the window's own menu bar takes from its height when it's
     /// resized, in points (on Windows, where baseview leaves it out).
     menu_height: f64,
     #[cfg(any(target_os = "macos", windows))]
     menu: Option<crate::menu::NativeMenu>,
+    /// Takes the keys nothing else does, so they don't sound the alert.
+    #[cfg(target_os = "macos")]
+    _key_sink: Option<objc2::rc::Retained<crate::key_sink::KeySink>>,
     panel: SharedPanel,
     settings_window: Option<egui_baseview::baseview::Window>,
     /// The meter's level now, in dB, falling back after each peak.
@@ -145,6 +154,13 @@ impl<P: Plugin> egui_baseview::App for MainWindow<P> {
         #[cfg(windows)]
         clip_children(window);
 
+        #[cfg(target_os = "macos")]
+        let key_sink = match parent_window(window) {
+            // SAFETY: the window's own view, open, on the main thread.
+            Some(ParentWindow::AppKit(view)) => unsafe { crate::key_sink::KeySink::install(view) },
+            _ => None,
+        };
+
         let layout = Layout {
             api: WindowApi::native().unwrap_or(WindowApi::X11),
             scale: window.scale_factor(),
@@ -178,9 +194,17 @@ impl<P: Plugin> egui_baseview::App for MainWindow<P> {
             scanned: Instant::now(),
             layout,
             seen,
+            asked: None,
+            #[cfg(target_os = "macos")]
+            view: match parent_window(window) {
+                Some(ParentWindow::AppKit(view)) => Some(view),
+                _ => None,
+            },
             menu_height,
             #[cfg(any(target_os = "macos", windows))]
             menu,
+            #[cfg(target_os = "macos")]
+            _key_sink: key_sink,
             panel: Arc::new(Mutex::new(panel)),
             settings_window: None,
             level: METER_FLOOR,
@@ -239,7 +263,7 @@ impl<P: Plugin> Inner<P> {
         for command in commands {
             self.run(command, window);
         }
-        self.follow_the_editor(window);
+        self.follow_the_editor(window, ui.ctx());
         if Standalone::<P>::takes_notes() {
             self.computer_keyboard(ui);
         } else {
@@ -293,33 +317,66 @@ impl<P: Plugin> Inner<P> {
     /// Keeps the window the editor's size: it follows the editor's own
     /// resizes, and when the person resizes the window, the editor takes
     /// the room, as near as it can.
-    fn follow_the_editor(&mut self, window: &WindowContext) {
+    fn follow_the_editor(&mut self, window: &WindowContext, ctx: &egui::Context) {
         let scale = window.scale_factor();
         if (scale - self.layout.scale).abs() > 1e-6 {
             self.layout.scale = scale;
             self.app.set_editor_scale(scale);
         }
+        let now = size_of(window);
+        // On Windows, the menu bar's height, learnt from what the window got.
+        if let Some(asked) = self.asked.take()
+            && cfg!(windows)
+        {
+            let short = asked.1 - (now.1 - self.menu_height);
+            if short.abs() > 0.5 && short.abs() < 100.0 {
+                self.menu_height = (self.menu_height + short).max(0.0);
+                self.resize(ctx, asked);
+                return;
+            }
+        }
         if let Some(size) = self.app.take_editor_resize() {
-            self.resize(window, self.layout.window_for(size));
+            self.resize(ctx, self.layout.window_for(size));
             return;
         }
-        let now = size_of(window);
         if now == self.seen {
             return;
         }
         self.seen = now;
-        let Some(fitted) = self.app.fit_editor(self.layout.editor_room(now)) else {
+        let room = self.layout.editor_room(now);
+        let Some(fitted) = self.app.fit_editor(room) else {
             return;
         };
         let wanted = self.layout.window_for(fitted);
         if (wanted.0 - now.0).abs() > 0.5 || (wanted.1 - now.1).abs() > 0.5 {
-            self.resize(window, wanted);
+            self.resize(ctx, wanted);
         }
     }
 
-    fn resize(&mut self, window: &WindowContext, size: (f64, f64)) {
-        resize(window, size, &mut self.menu_height);
-        self.seen = size_of(window);
+    /// Asks for the window to be `size` points, below the menu bar. The
+    /// window changes size once this frame is drawn: resizing it during
+    /// the frame would call back into the window while it draws, which on
+    /// macOS (and Windows) happens at once and panics.
+    fn resize(&mut self, ctx: &egui::Context, size: (f64, f64)) {
+        let wanted = size;
+        #[cfg(target_os = "macos")]
+        let size = match self.view {
+            // SAFETY: the window's own view, open, on the main thread.
+            Some(view) => match unsafe { crate::screen::room(view) } {
+                Some(room) => (size.0.min(room.0), size.1.min(room.1 - self.menu_height)),
+                None => size,
+            },
+            None => size,
+        };
+        let zoom = f64::from(ctx.zoom_factor());
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+            (size.0 / zoom) as f32,
+            ((size.1 + self.menu_height) / zoom) as f32,
+        )));
+        self.asked = Some(size);
+        // Short of what was wanted, the editor is fitted to the room on
+        // the next frame, as when the person resizes the window.
+        self.seen = (wanted.0, wanted.1 + self.menu_height);
     }
 
     /// Plays the computer keyboard while the window has the focus and no
@@ -329,7 +386,7 @@ impl<P: Plugin> Inner<P> {
         let (focused, events) = ui.input(|i| (i.focused, i.events.clone()));
         let strip = KeyboardFocus {
             focused,
-            typing: focused && ui.ctx().egui_wants_keyboard_input(),
+            typing: focused && ui.ctx().text_edit_focused(),
         };
         let focus = WindowFocus {
             strip,

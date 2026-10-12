@@ -60,6 +60,8 @@ pub mod settings;
 
 mod app;
 mod cpal_backend;
+#[cfg(target_os = "macos")]
+mod key_sink;
 mod layout;
 #[cfg_attr(
     not(any(target_os = "macos", windows)),
@@ -69,6 +71,8 @@ mod layout;
     )
 )]
 mod menu;
+#[cfg(target_os = "macos")]
+mod screen;
 mod settings_window;
 mod window;
 

@@ -652,7 +652,7 @@ fn pass_keys(ui: &Ui, cx: &EditorContext, before: KeyboardFocus) -> KeyboardFocu
     let (focused, events) = ui.input(|i| (i.focused, i.events.clone()));
     let focus = KeyboardFocus {
         focused,
-        typing: focused && ui.ctx().egui_wants_keyboard_input(),
+        typing: focused && ui.ctx().text_edit_focused(),
     };
     if focus != before {
         cx.set_keyboard_focus(focus);
@@ -788,6 +788,79 @@ fn resize_grip(ui: &mut Ui, theme: &Theme, size: Vec2, min_size: Vec2) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An editor host that keeps the keys passed on.
+    struct Keys(std::sync::Arc<std::sync::Mutex<Vec<EditorKey>>>);
+
+    impl lspk_plugin::editor::EditorHost for Keys {
+        fn request_callback(&self) {}
+        fn request_resize(&self, _size: EditorSize) -> bool {
+            true
+        }
+        fn key(&self, key: EditorKey) {
+            self.0.lock().unwrap().push(key);
+        }
+    }
+
+    /// One frame with `focus` focused (a button, or a text field) and the A
+    /// key pressed: where the editor says the keyboard stands, and the keys
+    /// it passed on.
+    fn frame_with(text_field: bool) -> (KeyboardFocus, Vec<EditorKey>) {
+        let keys = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let values = std::sync::Arc::new(lspk_plugin::ParamValues::new(Vec::new()).unwrap());
+        let (cx, _changes) = EditorContext::new(values, Box::new(Keys(keys.clone())));
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        let run = |events: Vec<egui::Event>, text: &mut String| {
+            let mut input = egui::RawInput {
+                events,
+                ..egui::RawInput::default()
+            };
+            input.focused = true;
+            let mut focus = KeyboardFocus::default();
+            let mut output = ctx.run_ui(input, |ui| {
+                let field = ui.text_edit_singleline(text);
+                let knob = ui.button("knob");
+                if text_field {
+                    field.request_focus();
+                } else {
+                    knob.request_focus();
+                }
+                focus = pass_keys(ui, &cx, KeyboardFocus::default());
+            });
+            output.textures_delta.clear();
+            focus
+        };
+        run(Vec::new(), &mut text);
+        let press = egui::Event::Key {
+            key: Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let focus = run(vec![press], &mut text);
+        let passed = keys.lock().unwrap().clone();
+        (focus, passed)
+    }
+
+    #[test]
+    fn a_focused_control_passes_keys_on_and_a_text_field_keeps_them() {
+        // A knob or switch keeps the focus after it's touched; the computer
+        // keyboard must still play.
+        let (focus, passed) = frame_with(false);
+        assert!(focus.focused && !focus.typing);
+        assert_eq!(
+            passed,
+            [EditorKey {
+                key: 'a',
+                pressed: true
+            }]
+        );
+        let (focus, passed) = frame_with(true);
+        assert!(focus.focused && focus.typing);
+        assert!(passed.is_empty());
+    }
 
     #[test]
     fn only_plain_keys_pass_on() {

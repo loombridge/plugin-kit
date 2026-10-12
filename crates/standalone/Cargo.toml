@@ -42,6 +42,22 @@ serde_json = "1"
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 muda = { version = "0.21.2", default-features = false }
 
+# The end of the window's key handling, so keys nothing takes don't
+# sound the system alert (`key_sink`), and the screen's room for the
+# window (`screen`). The releases muda already brings.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.5"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "NSEvent",
+    "NSResponder",
+    "NSView",
+    "NSWindow",
+    "NSScreen",
+    "objc2-core-foundation",
+] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
+
 [target.'cfg(windows)'.dependencies]
 # The window's style, so it doesn't draw over the editor inside it.
 windows-sys = { version = "0.61.2", features = [
