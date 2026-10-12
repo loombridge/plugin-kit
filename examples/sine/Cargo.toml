@@ -13,6 +13,12 @@ publish = false
 # its entry point, and makes Cargo build the cdylib beside them.
 crate-type = ["cdylib", "rlib"]
 
+# The standalone app, which `cargo xtask bundle` lays out beside the
+# plug-in's formats.
+[[bin]]
+name = "lspk-example-sine-standalone"
+path = "src/main.rs"
+
 [dependencies]
 lspk-params.workspace = true
 # CLAP natively, with VST3 and (on macOS) Audio Unit v2 made from it.
@@ -22,12 +28,20 @@ lspk-ui.workspace = true
 # The agent interface: its parameters and commands as tools, and its own MCP
 # server, off until the person switches it on.
 lspk-plugin-agent.workspace = true
+# The standalone app.
+lspk-standalone.workspace = true
 
 [dev-dependencies]
 lspk-agent.workspace = true
 serde_json = "1"
 lspk-rt.workspace = true
 lspk-test.workspace = true
+
+# Its benchmark scenarios, timed by `cargo xtask bench` and counted by CI's
+# instruction-count gate.
+[[bench]]
+name = "perf"
+harness = false
 
 [lints]
 workspace = true

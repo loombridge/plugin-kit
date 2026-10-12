@@ -8,6 +8,7 @@
 //! | [`golden`] | Golden renders and null tests: references stored as 24-bit FLAC with a manifest, bit-exact on the platform that made them and below −96 dBFS elsewhere, remade only by `cargo xtask golden --update` |
 //! | [`measure`] | Measurements as plain numbers: RMS and peak, noise floor, frequency response and phase, THD and THD+N, aliasing, pitch |
 //! | [`cpu`] | Wall-clock timing of blocks, for the performance harness |
+//! | [`bench`] | The performance harness: benchmark suites of plug-in scenarios and micro-benchmarks, timed on reference machines and counted in instructions by CI's regression gate |
 //! | [`clap`] | A CLAP host for tests, which loads a plug-in from its `.clap` file or its entry point and drives it block by block |
 //! | [`vst3`](mod@vst3) | A VST3 host for tests, which makes a plug-in from its VST3 factory, drives it block by block, and records the edits it reports to the host |
 //! | `auv2` (macOS) | An Audio Unit host for tests, which registers a plug-in's Audio Unit factory in the test process, renders it, and records the edits it reports to listeners |
@@ -50,6 +51,7 @@
 pub mod agent;
 #[cfg(all(feature = "hosts", target_os = "macos"))]
 pub mod auv2;
+pub mod bench;
 #[cfg(feature = "hosts")]
 pub mod clap;
 pub mod cpu;
