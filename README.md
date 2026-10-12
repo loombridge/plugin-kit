@@ -4,7 +4,7 @@ The plug-in kit is a set of Rust crates for building audio plug-ins: real-time s
 
 [Reagent](https://github.com/loombridge/reagent), a wavetable synthesiser, is the first plug-in built on it.
 
-The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands`, `lspk-agent`, `lspk-dsp` (oversampling and the SIMD helpers so far), `lspk-plugin` (with its CLAP, VST3 and Audio Unit v2 exports and editor hosting), `lspk-plugin-agent` (the agent interface inside a running plug-in), `lspk-ui` (editors embedded in the host's window, and a generic interface for any plug-in's parameters) and `lspk-test` (the headless test harness, with CLAP, VST3 and Audio Unit hosts, and the performance harness) hold working code, every other crate is still a stub, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
+The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands`, `lspk-agent`, `lspk-dsp` (oversampling, envelopes and the SIMD helpers so far), `lspk-plugin` (with its CLAP, VST3 and Audio Unit v2 exports and editor hosting), `lspk-plugin-agent` (the agent interface inside a running plug-in), `lspk-ui` (editors embedded in the host's window, and a generic interface for any plug-in's parameters) and `lspk-test` (the headless test harness, with CLAP, VST3 and Audio Unit hosts, and the performance harness) hold working code, every other crate is still a stub, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
 
 ## Crates
 
@@ -13,7 +13,7 @@ Every crate carries the prefix `lspk-`.
 | Crate | What it will hold |
 |---|---|
 | `lspk-rt` | The real-time harness: thread priority and audio workgroups, denormal flushing, the allocation trap, a lock-free logger, the RealtimeSanitizer harness |
-| `lspk-params` | Parameter descriptors, smoothing, sample-accurate parameter events, modulation offsets, gestures |
+| `lspk-params` | Parameter descriptors, smoothing, the parameter space of modular plug-ins (stable hierarchical IDs, fixed modules, slots, paths, remote-controls pages), sample-accurate parameter events, modulation offsets, gestures |
 | `lspk-commands` | The command registry: every user-facing action with a schema, a model-facing description and a permission class |
 | `lspk-agent` | The agent interface: MCP over stdio and over Streamable HTTP on loopback, tokens, permission prompts, the discovery file for running instances |
 | `lspk-dsp` | DSP building blocks: oscillators, interpolators, filters, envelopes, LFOs, oversampling, FFT, resampling, SIMD helpers, waveshapers |
@@ -30,7 +30,7 @@ Every crate carries the prefix `lspk-`.
 | `lspk-standalone` | The standalone app: any plug-in run as an application, with audio and MIDI device choice, the computer keyboard, settings kept between runs, and state files |
 | `lspk-test` | The headless test harness: renders, golden renders and null tests, measurements, format validators, a scripted MCP client, benchmarks |
 
-Two example plug-ins under `examples/`, never published, show the `Plugin` trait at its smallest and prove the format exports: `lspk-example-gain`, a stereo gain, and `lspk-example-sine`, an eight-voice sine instrument. Each also builds as a standalone app (`src/main.rs`, one line), which `cargo xtask bundle` lays out beside its plug-in formats.
+Three example plug-ins under `examples/`, never published, show the `Plugin` trait and prove the format exports: `lspk-example-gain`, a stereo gain, `lspk-example-sine`, an eight-voice sine instrument, and `lspk-example-modular`, a small synthesiser of fixed modules and a two-slot effects rack, which proves the parameter space in every format. Gain and Sine also build as standalone apps (`src/main.rs`, one line), which `cargo xtask bundle` lays out beside their plug-in formats.
 
 ## Develop
 

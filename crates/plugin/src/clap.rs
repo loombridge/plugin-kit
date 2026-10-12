@@ -2,15 +2,21 @@
 //!
 //! [`export_clap!`](crate::export_clap) in a plug-in's `cdylib` crate makes
 //! it a CLAP plug-in with the `params`, `state`, `audio-ports`,
-//! `note-ports`, `latency`, `tail` and `track-info` extensions, and `gui`
-//! for a plug-in with an [`Editor`](crate::Editor). The glue between
+//! `note-ports`, `latency`, `tail` and `track-info` extensions, `gui` for
+//! a plug-in with an [`Editor`](crate::Editor), and `remote-controls` for
+//! one with a [`ParamSpace`](lspk_params::ParamSpace). The glue between
 //! CLAP's calls and the [`Plugin`] and [`Processor`] traits allocates
 //! nothing, locks nothing and never blocks on the audio thread.
 //!
 //! What the host sees of each parameter: a continuous or gain parameter as
 //! its control's travel from 0 to 1, a stepped one as its whole-number
 //! value (a choice also as an enumeration), each automatable. The kit
-//! converts to and from the parameter's own units.
+//! converts to and from the parameter's own units. With a parameter space,
+//! each parameter's name, module and value text are its
+//! [view](crate::ParamValues::view)'s, a slot's unused reserved parameters
+//! are hidden, and a slot that changes its module rescans the info, text
+//! and values (allowed while active, since no range or flag a restart needs
+//! changes) and tells the host its remote-controls pages changed.
 
 use std::cell::RefCell;
 use std::ffi::CStr;
@@ -37,6 +43,10 @@ use clack_extensions::note_ports::{
 use clack_extensions::params::{
     HostParams, ParamDisplayWriter, ParamInfo, ParamInfoFlags, ParamInfoWriter, ParamRescanFlags,
     PluginAudioProcessorParams, PluginMainThreadParams, PluginParams,
+};
+use clack_extensions::remote_controls::{
+    HostRemoteControls, PluginRemoteControls, PluginRemoteControlsImpl, RemoteControlsPage,
+    RemoteControlsPageWriter,
 };
 use clack_extensions::state::{HostState, PluginState, PluginStateImpl};
 use clack_extensions::tail::{PluginTail, PluginTailImpl, TailLength};
@@ -238,6 +248,9 @@ impl<P: Plugin> ClackPlugin for ClapPlugin<P> {
         if shared.is_some_and(|shared| shared.has_editor.load(Ordering::Acquire)) {
             builder.register::<PluginGui>();
         }
+        if shared.is_some_and(|shared| shared.has_space.load(Ordering::Acquire)) {
+            builder.register::<PluginRemoteControls>();
+        }
     }
 }
 
@@ -255,6 +268,7 @@ impl<P: Plugin> DefaultPluginFactory for ClapPlugin<P> {
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<ClapShared<'_, P>, ClackError> {
         Ok(ClapShared {
             has_editor: AtomicBool::new(false),
+            has_space: AtomicBool::new(false),
             _lifetime: PhantomData,
             _plugin: PhantomData,
         })
@@ -268,6 +282,7 @@ impl<P: Plugin> DefaultPluginFactory for ClapPlugin<P> {
             params: host.get_extension::<HostParams>(),
             state: host.get_extension::<HostState>(),
             track_info: host.get_extension::<HostTrackInfo>(),
+            remote_controls: host.get_extension::<HostRemoteControls>(),
             // SAFETY: as for `host` below: `ClapBackend`'s `Drop` empties
             // the waker before the instance ends, so no thread reaches the
             // handle after that.
@@ -283,7 +298,7 @@ impl<P: Plugin> DefaultPluginFactory for ClapPlugin<P> {
         let shared_host = host.shared();
         let link = Host::new(Box::new(backend));
         let mut plugin = P::new(link.clone());
-        let values = Arc::new(ParamValues::new(plugin.params())?);
+        let values = Arc::new(ParamValues::for_plugin(&plugin)?);
         let edits = link.connect(values.clone());
         let editor = plugin.editor().map(|editor| {
             let (cx, changes) = EditorContext::new(
@@ -305,6 +320,9 @@ impl<P: Plugin> DefaultPluginFactory for ClapPlugin<P> {
             }
         });
         shared.has_editor.store(editor.is_some(), Ordering::Release);
+        shared
+            .has_space
+            .store(values.space().is_some(), Ordering::Release);
         Ok(ClapMainThread {
             values,
             plugin: RefCell::new(plugin),
@@ -316,10 +334,12 @@ impl<P: Plugin> DefaultPluginFactory for ClapPlugin<P> {
     }
 }
 
-/// What every thread shares: whether the plug-in has an editor, which
-/// decides whether the host sees the `gui` extension.
+/// What every thread shares: whether the plug-in has an editor and a
+/// parameter space, which decide whether the host sees the `gui` and
+/// `remote-controls` extensions.
 pub struct ClapShared<'a, P> {
     has_editor: AtomicBool,
+    has_space: AtomicBool,
     _lifetime: PhantomData<&'a ()>,
     _plugin: PhantomData<fn() -> P>,
 }
@@ -332,6 +352,7 @@ struct ClapBackend {
     params: Option<HostParams>,
     state: Option<HostState>,
     track_info: Option<HostTrackInfo>,
+    remote_controls: Option<HostRemoteControls>,
     waker: Arc<ClapWaker>,
 }
 
@@ -384,6 +405,18 @@ impl HostBackend for ClapBackend {
     fn values_changed(&self) {
         if let Some(params) = &self.params {
             params.rescan(&self.host, ParamRescanFlags::VALUES);
+        }
+    }
+
+    fn params_changed(&self) {
+        if let Some(params) = &self.params {
+            params.rescan(
+                &self.host,
+                ParamRescanFlags::INFO | ParamRescanFlags::TEXT | ParamRescanFlags::VALUES,
+            );
+        }
+        if let Some(remote_controls) = &self.remote_controls {
+            remote_controls.changed(&self.host);
         }
     }
 
@@ -469,6 +502,8 @@ impl<P: Plugin> Drop for ClapMainThread<'_, P> {
 
 impl<'a, P: Plugin> PluginMainThread<'a, ClapShared<'a, P>> for ClapMainThread<'a, P> {
     fn on_main_thread(&self) {
+        // The host's automation may have changed a slot's module.
+        self.host.sync_slots();
         if let Some(editor) = &self.editor {
             if let Ok(mut changes) = editor.changes.try_borrow_mut() {
                 changes.apply(&self.host);
@@ -494,6 +529,9 @@ impl<P: Plugin> PluginTrackInfoImpl for ClapMainThread<'_, P> {
 /// The audio thread's side: the processor.
 pub struct ClapProcessor<'a, P: Plugin> {
     values: Arc<ParamValues>,
+    /// For asking for a main-thread callback when the host's automation
+    /// changes a slot's module.
+    host: HostSharedHandle<'a>,
     processor: Option<P::Processor>,
     edits: Option<Consumer<Edit>>,
     /// The block's own edits, as events at frame 0; never grows past the
@@ -506,7 +544,7 @@ impl<'a, P: Plugin> PluginAudioProcessor<'a, ClapShared<'a, P>, ClapMainThread<'
     for ClapProcessor<'a, P>
 {
     fn activate(
-        _host: HostAudioProcessorHandle<'a>,
+        host: HostAudioProcessorHandle<'a>,
         main_thread: &ClapMainThread<'a, P>,
         _shared: &'a ClapShared<'a, P>,
         audio_config: PluginAudioConfiguration,
@@ -530,6 +568,7 @@ impl<'a, P: Plugin> PluginAudioProcessor<'a, ClapShared<'a, P>, ClapMainThread<'
         Ok(Self {
             first: Vec::with_capacity(Host::edit_capacity(&values)),
             values,
+            host: host.shared(),
             processor: Some(processor),
             edits,
             _shared: PhantomData,
@@ -551,7 +590,9 @@ impl<'a, P: Plugin> PluginAudioProcessor<'a, ClapShared<'a, P>, ClapMainThread<'
             &self.values,
             events.output,
         );
-        record(events.input, &self.values);
+        if record(events.input, &self.values) {
+            self.host.request_callback();
+        }
 
         let frames = audio.frames_count() as usize;
         let layout = P::INFO.audio;
@@ -661,22 +702,29 @@ fn drain(
     }
 }
 
-/// Records each of the host's parameter changes in `values`.
-fn record(input: &InputEvents<'_>, values: &ParamValues) {
+/// Records each of the host's parameter changes in `values`; returns
+/// whether one was a slot's type parameter, so the slots need bringing up
+/// to date on the main thread ([`Host::sync_slots`]).
+fn record(input: &InputEvents<'_>, values: &ParamValues) -> bool {
+    let mut selector = false;
     for event in input {
         if let Some(CoreEventSpace::ParamValue(event)) = event.as_core_event()
             && let Some(id) = event.param_id()
             && let Some(descriptor) = values.descriptor(ParamId(id.get()))
         {
             values.set(descriptor.id, from_host(descriptor, event.value()));
+            selector |= values.is_selector(descriptor.id);
         }
     }
+    selector
 }
 
 impl<P: Plugin> PluginAudioProcessorParams for ClapProcessor<'_, P> {
     fn flush(&mut self, input: &InputEvents<'_>, output: &mut OutputEvents<'_>) {
         drain(&mut self.edits, &mut self.first, &self.values, output);
-        record(input, &self.values);
+        if record(input, &self.values) {
+            self.host.request_callback();
+        }
         let Some(processor) = self.processor.as_mut() else {
             return;
         };
@@ -865,7 +913,13 @@ impl<P: Plugin> PluginMainThreadParams for ClapMainThread<'_, P> {
         let Some(descriptor) = self.values.descriptors().get(param_index as usize) else {
             return;
         };
+        let Some(view) = self.values.view(descriptor.id) else {
+            return;
+        };
         let mut flags = ParamInfoFlags::IS_AUTOMATABLE;
+        if view.hidden {
+            flags |= ParamInfoFlags::IS_HIDDEN;
+        }
         let (min, max) = if descriptor.is_stepped() {
             flags |= ParamInfoFlags::IS_STEPPED;
             if matches!(descriptor.kind, ParamKind::Choice { .. }) {
@@ -879,8 +933,8 @@ impl<P: Plugin> PluginMainThreadParams for ClapMainThread<'_, P> {
             id: ClapId::new(descriptor.id.0),
             flags,
             cookie: Cookie::empty(),
-            name: descriptor.name.as_bytes(),
-            module: b"",
+            name: view.name.as_bytes(),
+            module: view.module.as_bytes(),
             min_value: min,
             max_value: max,
             default_value: to_host(descriptor, descriptor.default),
@@ -898,16 +952,16 @@ impl<P: Plugin> PluginMainThreadParams for ClapMainThread<'_, P> {
         value: f64,
         writer: &mut ParamDisplayWriter<'_>,
     ) -> std::fmt::Result {
-        let descriptor = self
-            .values
-            .descriptor(ParamId(param_id.get()))
-            .ok_or(std::fmt::Error)?;
-        writer.write_str(&descriptor.format(from_host(descriptor, value)))
+        let id = ParamId(param_id.get());
+        let descriptor = self.values.descriptor(id).ok_or(std::fmt::Error)?;
+        let view = self.values.view(id).ok_or(std::fmt::Error)?;
+        writer.write_str(&view.format(from_host(descriptor, value)))
     }
 
     fn text_to_value(&self, param_id: ClapId, text: &CStr) -> Option<f64> {
-        let descriptor = self.values.descriptor(ParamId(param_id.get()))?;
-        let value = descriptor.parse(text.to_str().ok()?)?;
+        let id = ParamId(param_id.get());
+        let descriptor = self.values.descriptor(id)?;
+        let value = self.values.view(id)?.parse(text.to_str().ok()?)?;
         Some(to_host(descriptor, value))
     }
 
@@ -917,7 +971,9 @@ impl<P: Plugin> PluginMainThreadParams for ClapMainThread<'_, P> {
             let mut none = Vec::new();
             drain(&mut edits, &mut none, &self.values, output);
         }
-        record(input, &self.values);
+        if record(input, &self.values) {
+            self.host.request_callback();
+        }
     }
 }
 
@@ -955,6 +1011,31 @@ impl<P: Plugin> PluginStateImpl for ClapMainThread<'_, P> {
         let active = self.edits.try_borrow().is_ok_and(|edits| edits.is_none());
         self.host.state_loaded(active)?;
         Ok(())
+    }
+}
+
+impl<P: Plugin> PluginRemoteControlsImpl for ClapMainThread<'_, P> {
+    fn count(&self) -> u32 {
+        self.values.space().map_or(0, |space| {
+            u32::try_from(space.pages(&|id| self.values.get(id)).len()).unwrap_or(0)
+        })
+    }
+
+    fn get(&self, index: u32, writer: &mut RemoteControlsPageWriter<'_>) {
+        let Some(space) = self.values.space() else {
+            return;
+        };
+        let pages = space.pages(&|id| self.values.get(id));
+        let Some(page) = pages.get(index as usize) else {
+            return;
+        };
+        writer.set(&RemoteControlsPage {
+            section_name: page.section.as_bytes(),
+            page_id: ClapId::new(page.id),
+            page_name: page.name.as_bytes(),
+            param_ids: page.params.map(|id| id.map(|id| ClapId::new(id.0))),
+            is_for_preset: false,
+        });
     }
 }
 

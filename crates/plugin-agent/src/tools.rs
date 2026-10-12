@@ -128,7 +128,7 @@ fn empty_object() -> Value {
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct QueryArgs {
-    /// Only these parameters, by ID or name; leave it out for every one.
+    /// Only these parameters, by ID, name or path; leave it out for every one.
     #[serde(default)]
     params: Vec<ParamRef>,
 }

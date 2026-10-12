@@ -1133,6 +1133,14 @@ void ClapAsVst3::param_rescan(clap_param_rescan_flags flags)
         if (_plugin->_ext._params->get_info(_plugin->_plugin, p->param_index_for_clap_get_info, &info))
         {
           str8ToStr16(p->getInfo().title, info.name, str16BufferSize(p->getInfo().title));
+          // plug-in kit: the short title and the hidden flag follow the
+          // info too, as CLAP allows on an info rescan and VST3's
+          // kParamTitlesChanged covers.
+          str8ToStr16(p->getInfo().shortTitle, info.name, str16BufferSize(p->getInfo().shortTitle));
+          if (info.flags & CLAP_PARAM_IS_HIDDEN)
+            p->getInfo().flags |= Vst::ParameterInfo::kIsHidden;
+          else
+            p->getInfo().flags &= ~Vst::ParameterInfo::kIsHidden;
         }
       }
     }

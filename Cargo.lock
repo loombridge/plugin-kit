@@ -1300,6 +1300,7 @@ name = "lspk-dsp"
 version = "0.0.0"
 dependencies = [
  "lspk-params",
+ "lspk-rt",
  "lspk-test",
 ]
 
@@ -1314,6 +1315,19 @@ dependencies = [
  "lspk-plugin-agent",
  "lspk-rt",
  "lspk-standalone",
+ "lspk-test",
+ "lspk-ui",
+ "serde_json",
+]
+
+[[package]]
+name = "lspk-example-modular"
+version = "0.0.0"
+dependencies = [
+ "lspk-params",
+ "lspk-plugin",
+ "lspk-plugin-agent",
+ "lspk-rt",
  "lspk-test",
  "lspk-ui",
  "serde_json",
