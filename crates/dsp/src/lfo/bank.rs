@@ -153,7 +153,7 @@ impl LfoBank {
     /// shape, the path and sample and hold use the lanes only when they're
     /// at least 8 wide (AVX2 and AVX-512, where they take a fifth to a third
     /// fewer instructions); with 4 lanes the per-voice position and segment
-    /// work dominates and the scalar path is about 15 % quicker on NEON.
+    /// work dominates, and on NEON the lanes are no quicker.
     /// `transport` is the host's at the block's first sample.
     ///
     /// # Panics
