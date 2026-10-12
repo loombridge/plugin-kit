@@ -1,12 +1,16 @@
 //! Micro-benchmarks for `lspk-wavetable`: loading a table (the WAV read,
-//! the morphed frames and the mipmaps) and reading one per sample. `cargo
-//! xtask bench` times them, and CI's instruction-count gate covers them.
+//! the morphed frames and the mipmaps), reading one per sample, and the
+//! oscillator rendering one voice and 32, scalar and across lanes in SIMD.
+//! `cargo xtask bench` times them, and CI's instruction-count gate covers
+//! them (at the AVX2 level).
 
 use std::hint::black_box;
 use std::process::ExitCode;
 
+use lspk_dsp::simd;
 use lspk_test::bench::Suite;
-use lspk_wavetable::{Interpolation, MAX_FRAMES, Table, Wavetable, increment, wav};
+use lspk_wavetable::osc::{Inputs, Layout, Onset, Oscillator};
+use lspk_wavetable::{Cache, Interpolation, MAX_FRAMES, Table, Wavetable, increment, wav};
 
 /// Frames in a block, as hosts commonly use.
 const BLOCK: usize = 512;
@@ -67,5 +71,63 @@ fn main() -> ExitCode {
         }
     });
 
+    // The oscillator: one voice, 32 voices, and 32 voices with every lane's
+    // frame moving at audio rate across a 16-frame table, a block per
+    // call, scalar and at the SIMD level this CPU dispatches.
+    for (name, voices, frame_mod) in [
+        ("osc/one-voice", 1, false),
+        ("osc/32-voices", 32, false),
+        ("osc/32-voices-frame-mod", 32, true),
+    ] {
+        for simd in [false, true] {
+            let id = format!("{name}/{}", if simd { "simd" } else { "scalar" });
+            suite.micro(&id, BLOCK, move || oscillator(voices, frame_mod, simd));
+        }
+    }
+
     suite.main()
+}
+
+/// An oscillator of `voices` voices on a 16-frame table, and a routine
+/// rendering a block of it.
+fn oscillator(voices: usize, frame_mod: bool, simd: bool) -> impl FnMut() {
+    let table = Cache::global()
+        .share(wav::read(&wav_bytes(16, Interpolation::None), None).expect("a valid file"));
+    let mut osc = Oscillator::new(
+        table,
+        Layout {
+            voices,
+            lanes_per_voice: 1,
+        },
+        48_000.0,
+        BLOCK,
+        1,
+    );
+    osc.params_mut().frame = 4.5;
+    let keys: Vec<f32> = (0..voices).map(|v| 36.0 + v as f32 * 1.5).collect();
+    for (voice, &key) in keys.iter().enumerate() {
+        osc.start(voice, key, Onset::Fresh);
+    }
+    let lanes = osc.lane_count();
+    let mut pitch = vec![0.0; lanes];
+    pitch[..voices].copy_from_slice(&keys);
+    let modulation: Vec<f32> = (0..BLOCK * lanes)
+        .map(|i| 7.0 * (1.0 + ((i / lanes) as f32 * 0.01 + (i % lanes) as f32).sin()))
+        .collect();
+    let mut out = vec![0.0f32; BLOCK * lanes];
+    let level = simd::level();
+    move || {
+        let inputs = Inputs {
+            lanes: voices,
+            pitch: &pitch,
+            frame_mod: frame_mod.then_some(&modulation[..]),
+            ..Inputs::default()
+        };
+        if simd {
+            osc.process_at(level, BLOCK, &inputs, &mut out);
+        } else {
+            osc.process_scalar(BLOCK, &inputs, &mut out);
+        }
+        black_box(&out);
+    }
 }

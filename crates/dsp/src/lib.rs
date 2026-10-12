@@ -11,7 +11,7 @@
 //! | [`lfo`] | LFOs: drawn shapes, an XY path, chaos and sample and hold, per voice or shared, with a SIMD path across voices |
 //! | [`oversample`] | Oversampling by 2, 4 or 8 for nonlinear processes |
 //! | [`filter`] | Zero-delay-feedback filters per voice: a state-variable family and a transistor ladder, scalar or in SIMD lanes across voices |
-//! | [`simd`] | Lanes of `f32` for NEON, SSE4.2, AVX2 and AVX-512, chosen at run time, with a portable fallback |
+//! | [`simd`] | Lanes of `f32`, and of `u32` beside them, for NEON, SSE4.2, AVX2 and AVX-512, chosen at run time, with a portable fallback; gathers from tables, and a fast 2^x |
 //!
 //! Everything here that runs per sample allocates nothing, locks nothing and
 //! never blocks, so it's safe on an audio thread. Each hot path has a
