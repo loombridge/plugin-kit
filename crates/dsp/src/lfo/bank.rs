@@ -146,13 +146,15 @@ impl LfoBank {
 
     /// Fills `out` (and `out_y`, the XY path's Y output; 0 for the other
     /// types) with `frames` samples for every voice, frame by frame, by
-    /// whichever path is quicker for the slot's type: the chaos types across
-    /// voices in SIMD lanes at the level this CPU dispatches, where the
-    /// integrator's arithmetic dominates (about 3 times quicker on Apple
-    /// Silicon); the drawn shape, the path and sample and hold one voice at a
-    /// time, where the per-voice position and segment work dominates and the
-    /// lanes only add traffic. `transport` is the host's at the block's
-    /// first sample.
+    /// whichever path is quicker. The chaos types always run across voices
+    /// in SIMD lanes, at the level this CPU dispatches: the integrator's
+    /// arithmetic dominates, and the lanes take about a third of the time on
+    /// Apple Silicon's NEON and half the instructions with AVX2. The drawn
+    /// shape, the path and sample and hold use the lanes only when they're
+    /// at least 8 wide (AVX2 and AVX-512, where they take a fifth to a third
+    /// fewer instructions); with 4 lanes the per-voice position and segment
+    /// work dominates and the scalar path is about 15 % quicker on NEON.
+    /// `transport` is the host's at the block's first sample.
     ///
     /// # Panics
     ///
@@ -164,11 +166,12 @@ impl LfoBank {
         out: &mut [f32],
         out_y: Option<&mut [f32]>,
     ) {
-        match self.lfo.settings.kind {
-            LfoType::Lorenz | LfoType::Rossler => {
-                self.process_at(simd::level(), transport, frames, out, out_y);
-            }
-            _ => self.process_scalar(transport, frames, out, out_y),
+        let level = simd::level();
+        let chaos = matches!(self.lfo.settings.kind, LfoType::Lorenz | LfoType::Rossler);
+        if chaos || level.lanes() >= 8 {
+            self.process_at(level, transport, frames, out, out_y);
+        } else {
+            self.process_scalar(transport, frames, out, out_y);
         }
     }
 
