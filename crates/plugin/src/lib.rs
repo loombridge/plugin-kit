@@ -78,7 +78,7 @@ pub use editor::{Editor, EditorContext, EditorSize, ParentWindow, ResizeHints, W
 pub use events::{Event, EventSource, Events, Expression, Note};
 pub use host::{EditError, EventSink, Host, HostBackend, OutputEvent, ProcessContext, Waker};
 pub use lspk_commands::{RegisterError, Registry};
-pub use lspk_params::{ParamDescriptor, ParamId};
+pub use lspk_params::{ParamDescriptor, ParamId, ParamSpace, ParamView};
 pub use params::ParamValues;
 
 use std::ffi::CStr;
@@ -115,9 +115,40 @@ use std::fmt;
 /// - **R0.10, the editor:** [`Plugin::editor`], served through CLAP's
 ///   `gui` extension, which `clap-wrapper` turns into VST3's and Audio
 ///   Units' views.
-/// - **R0.14, the parameter space:** hierarchical [`ParamId`]s within the
-///   32 bits every format gives an ID, and descriptors that
-///   [`Plugin::params`] returns afresh when the host rescans.
+/// - **R0.14, the parameter space:** [`Plugin::param_space`], with
+///   hierarchical [`ParamId`]s within the 32 bits every format gives an ID
+///   and slots whose parameters change meaning with their module; see
+///   "Modular plug-ins" below.
+///
+/// # Modular plug-ins
+///
+/// A plug-in made of modules returns a [`ParamSpace`] from
+/// [`param_space`](Self::param_space) and leaves
+/// [`params`](Self::params) to its default, which lists the space's
+/// parameters. Every parameter of every fixed module is then visible to the
+/// host by its real name (`Osc A Level`), and each slot's reserved
+/// parameters take its current module's names, value text and hidden
+/// flags. When a slot's type parameter changes, from any direction (the
+/// host's automation, an edit, the editor, an agent), the kit gives the
+/// slot's reserved parameters the new module's defaults, passes them to the
+/// processor, and tells the host: CLAP's `params.rescan` with the info,
+/// text and values flags and `remote-controls.changed`, which clap-wrapper
+/// turns into VST3's `restartComponent` (titles and values changed) and
+/// Audio Units' parameter list and info notifications. Loaded state keeps
+/// its values. The IDs never change, so automation a host has recorded on a
+/// slot's parameter stays with the slot.
+///
+/// What each format's host is told on a slot's change, as the kit's test
+/// hosts in `lspk-test` see it:
+///
+/// | Format | The host is told | Notes |
+/// |---|---|---|
+/// | CLAP | `params.rescan(INFO \| TEXT \| VALUES)`, then `remote-controls.changed` | Allowed while active, since no range, step or flag that needs a restart changes. The host rereads names, modules, the hidden flag, value text and values, and records no automation for the new defaults |
+/// | VST3 | `restartComponent(kParamValuesChanged \| kParamTitlesChanged)` | clap-wrapper first refreshes its own copy of each title, short title, hidden flag and value. A change the host's automation makes reaches the main thread from clap-wrapper's idle timer, which on Linux runs only while the editor is open; the plug-in's own changes are told at once everywhere. Units (from CLAP's module paths) are made once, at load |
+/// | Audio Unit v2 | `kAudioUnitProperty_ParameterList`, `kAudioUnitProperty_ParameterInfo` and `kAudioUnitProperty_ClassInfo` changed | clap-wrapper rereads every parameter's info: a hidden parameter is neither readable nor writable. Its module path is its clump |
+///
+/// How real hosts (Bitwig, Reaper, Live, Logic and the rest) show the
+/// change is checked by hand before each release.
 pub trait Plugin: Sized + 'static {
     /// The audio-thread half.
     type Processor: Processor;
@@ -133,8 +164,20 @@ pub trait Plugin: Sized + 'static {
     /// The parameters, each with an ID that never changes, in the order a
     /// host lists them. The kit asks once, as the instance starts, and
     /// refuses an instance whose descriptors break a rule
-    /// ([`ParamDescriptor::check`]) or repeat an ID.
-    fn params(&self) -> Vec<ParamDescriptor>;
+    /// ([`ParamDescriptor::check`]) or repeat an ID. By default, the
+    /// parameters of [`param_space`](Self::param_space).
+    fn params(&self) -> Vec<ParamDescriptor> {
+        self.param_space()
+            .map(|space| space.descriptors())
+            .unwrap_or_default()
+    }
+
+    /// The plug-in's parameter space, if it's made of modules: asked for
+    /// once, as the instance starts. Its parameters must be
+    /// [`params`](Self::params)'s.
+    fn param_space(&self) -> Option<ParamSpace> {
+        None
+    }
 
     /// Makes the processor for `config`: allocate everything it will need
     /// here, sized for [`ProcessConfig::max_frames`], since the processor

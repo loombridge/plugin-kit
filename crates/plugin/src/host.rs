@@ -33,6 +33,13 @@ pub trait HostBackend {
     /// Tells the host every parameter's value may have changed without an
     /// edit (after loading state), so it reads them again.
     fn values_changed(&self);
+    /// Tells the host parameters' names, value text, hidden flags and
+    /// values may have changed, and the remote-controls pages with them,
+    /// because a slot of the plug-in's [`ParamSpace`](lspk_params::ParamSpace)
+    /// changed its module. By default, [`values_changed`](Self::values_changed).
+    fn params_changed(&self) {
+        self.values_changed();
+    }
     /// A way to ask for [`Plugin::on_main_thread`](crate::Plugin::on_main_thread)
     /// from any thread, such as an agent server's, if the host offers one.
     /// It must do nothing once the instance has gone.
@@ -108,6 +115,9 @@ struct HostInner {
     backend: RefCell<Option<Box<dyn HostBackend>>>,
     values: OnceCell<Arc<ParamValues>>,
     edits: OnceCell<RefCell<Producer<Edit>>>,
+    /// Which choice each slot of the parameter space held when last looked
+    /// at.
+    selection: RefCell<Vec<usize>>,
 }
 
 impl Host {
@@ -120,6 +130,7 @@ impl Host {
                 backend: RefCell::new(Some(backend)),
                 values: OnceCell::new(),
                 edits: OnceCell::new(),
+                selection: RefCell::new(Vec::new()),
             }),
         }
     }
@@ -135,6 +146,9 @@ impl Host {
     #[must_use]
     pub fn connect(&self, values: Arc<ParamValues>) -> Consumer<Edit> {
         let (producer, consumer) = RingBuffer::new(Self::edit_capacity(&values));
+        if let Some(space) = values.space() {
+            *self.inner.selection.borrow_mut() = space.selection(&|id| values.get(id));
+        }
         assert!(
             self.inner.values.set(values).is_ok()
                 && self.inner.edits.set(RefCell::new(producer)).is_ok(),
@@ -286,7 +300,16 @@ impl Host {
     /// The values couldn't all be queued for the processor.
     #[doc(hidden)]
     pub fn state_loaded(&self, active: bool) -> Result<(), EditError> {
-        self.with_backend(|b| b.values_changed());
+        // A loaded state holds the values of the modules its slots hold:
+        // the slots take them as they are.
+        let adopted = self.selection_changed();
+        self.with_backend(|b| {
+            if adopted.is_empty() {
+                b.values_changed();
+            } else {
+                b.params_changed();
+            }
+        });
         if !active {
             return Ok(());
         }
@@ -309,6 +332,63 @@ impl Host {
         Ok(())
     }
 
+    /// Brings the slots of the plug-in's parameter space up to date after
+    /// a slot's type parameter changed: each slot that now holds another
+    /// module gives its reserved parameters the new module's defaults,
+    /// passed to the processor without the host hearing them as edits, and
+    /// the host is told what changed
+    /// ([`HostBackend::params_changed`]). Returns whether any slot changed.
+    ///
+    /// The kit calls it after every edit of a type parameter, and an
+    /// adapter calls it on the main thread after the host's automation
+    /// changes one ([`ParamValues::is_selector`]).
+    pub fn sync_slots(&self) -> bool {
+        let changed = self.selection_changed();
+        if changed.is_empty() {
+            return false;
+        }
+        let (Some(values), Some(queue)) = (self.values(), self.inner.edits.get()) else {
+            return false;
+        };
+        if let Some(space) = values.space() {
+            let mut queue = queue.borrow_mut();
+            for (slot, choice) in changed {
+                for (id, value) in space.slot_defaults(slot, choice) {
+                    values.set(id, value);
+                    // A full queue drops the processor's copy; the values
+                    // themselves are already set.
+                    let _ = queue.push(Edit::Value {
+                        id,
+                        value,
+                        echo: false,
+                    });
+                }
+            }
+        }
+        self.with_backend(|b| {
+            b.params_changed();
+            b.request_process();
+            b.mark_dirty();
+        });
+        true
+    }
+
+    /// Each slot that holds another choice than when last looked at, with
+    /// the choice it holds now; remembers the choices now.
+    fn selection_changed(&self) -> Vec<(usize, usize)> {
+        let Some(space) = self.values().and_then(ParamValues::space) else {
+            return Vec::new();
+        };
+        let values = self.values().expect("a space comes with values");
+        let now = space.selection(&|id| values.get(id));
+        let before = self.inner.selection.replace(now.clone());
+        now.iter()
+            .enumerate()
+            .filter(|(slot, choice)| before.get(*slot) != Some(*choice))
+            .map(|(slot, choice)| (slot, *choice))
+            .collect()
+    }
+
     fn clamped(&self, id: ParamId, value: f64) -> Result<f64, EditError> {
         let values = self.values().ok_or(EditError::NotReady)?;
         let descriptor = values.descriptor(id).ok_or(EditError::UnknownParam(id))?;
@@ -324,6 +404,7 @@ impl Host {
             return Err(EditError::UnknownParam(id));
         }
         let queue = self.inner.edits.get().ok_or(EditError::NotReady)?;
+        let mut selector = false;
         {
             let mut queue = queue.borrow_mut();
             if queue.slots() < edits.len() {
@@ -332,9 +413,13 @@ impl Host {
             for edit in edits {
                 if let Edit::Value { id, value, .. } = *edit {
                     values.set(id, value);
+                    selector |= values.is_selector(id);
                 }
                 queue.push(*edit).map_err(|_| EditError::QueueFull)?;
             }
+        }
+        if selector {
+            self.sync_slots();
         }
         self.with_backend(|b| {
             b.request_flush();
@@ -479,6 +564,7 @@ mod tests {
         dirty: Cell<u32>,
         process: Cell<u32>,
         rescan: Cell<u32>,
+        changed: Cell<u32>,
     }
 
     struct Recorder(Rc<Calls>);
@@ -497,6 +583,9 @@ mod tests {
         fn request_callback(&self) {}
         fn values_changed(&self) {
             self.0.rescan.set(self.0.rescan.get() + 1);
+        }
+        fn params_changed(&self) {
+            self.0.changed.set(self.0.changed.get() + 1);
         }
     }
 
@@ -579,6 +668,81 @@ mod tests {
         host.edit(ParamId(1), 0.5).expect("still recorded");
         host.request_restart();
         assert_eq!(calls.flush.get(), 0);
+    }
+
+    /// A space with one slot, holding nothing or a module of two
+    /// parameters.
+    fn slotted() -> (Host, Consumer<Edit>, Rc<Calls>, lspk_params::Slot) {
+        use lspk_params::{ModuleType, ParamSpace, ParamUnit};
+        let space = ParamSpace::builder()
+            .slots(
+                (9, "fx", "FX"),
+                "Type",
+                &["1"],
+                vec![
+                    ModuleType::new(1, "off", "Off"),
+                    ModuleType::new(2, "echo", "Echo")
+                        .param(ParamDescriptor::continuous(
+                            ParamId(0),
+                            "Time",
+                            (0.0, 100.0),
+                            25.0,
+                            ParamUnit::Milliseconds,
+                        ))
+                        .param(ParamDescriptor::toggle(ParamId(1), "Sync", true)),
+                ],
+            )
+            .build()
+            .expect("a space");
+        let slot = space.slots()[0].clone();
+        let values = ParamValues::with_space(space.descriptors(), Arc::new(space))
+            .expect("valid parameters");
+        let calls = Rc::new(Calls::default());
+        let host = Host::new(Box::new(Recorder(calls.clone())));
+        let edits = host.connect(Arc::new(values));
+        (host, edits, calls, slot)
+    }
+
+    #[test]
+    fn a_slots_new_module_starts_at_its_defaults_and_the_host_is_told() {
+        let (host, mut edits, calls, slot) = slotted();
+        host.edit(slot.selector, 1.0).expect("an edit");
+        assert_eq!(calls.changed.get(), 1);
+        let queued: Vec<Edit> = std::iter::from_fn(|| edits.pop().ok()).collect();
+        assert_eq!(
+            queued[3..],
+            [
+                Edit::Value {
+                    id: slot.reserved_id(0),
+                    value: 0.25,
+                    echo: false
+                },
+                Edit::Value {
+                    id: slot.reserved_id(1),
+                    value: 1.0,
+                    echo: false
+                },
+            ]
+        );
+        let values = host.values().expect("connected");
+        assert_eq!(
+            values.view(slot.reserved_id(1)).expect("Sync").name,
+            "FX 1 Sync"
+        );
+        // Nothing else changed, so nothing more to tell.
+        assert!(!host.sync_slots());
+        assert_eq!(calls.changed.get(), 1);
+
+        // Loaded state keeps its values, and the host rereads everything.
+        values.set(slot.selector, 0.0);
+        values.set(slot.reserved_id(0), 0.75);
+        host.state_loaded(false).expect("inactive");
+        assert_eq!(calls.changed.get(), 2);
+        values.set(slot.selector, 1.0);
+        host.state_loaded(false).expect("inactive");
+        assert_eq!(values.get(slot.reserved_id(0)), Some(0.75));
+        assert_eq!(calls.changed.get(), 3);
+        assert!(values.view(slot.reserved_id(0)).is_some_and(|v| !v.hidden));
     }
 
     struct Collect(Vec<OutputEvent>);

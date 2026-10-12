@@ -7,9 +7,16 @@
 //! automation, undo and saved project stay in step. Every change one call
 //! makes ([`Edits`]) opens its parameters' gestures as it first touches each
 //! and closes them all at the end, so the host takes the call as one step.
+//!
+//! A modular plug-in's parameters ([`lspk_params::ParamSpace`]) appear by
+//! their real names and paths (`fx "1" / param "Drive"`), with their
+//! current module's kind, range and value text; a slot's reserved
+//! parameters its module doesn't use are left out. One `params.set` can
+//! change a slot's type and then set its new module's parameters: each
+//! value is read as the values before it in the call leave the slots.
 
 use lspk_commands::{CommandSpec, Context, NoArgs, Permission, RegisterError, Registry};
-use lspk_params::{ParamDescriptor, ParamId, ParamKind};
+use lspk_params::{ParamId, ParamKind, ParamView};
 use lspk_plugin::{Host, ParamValues, Plugin};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -31,13 +38,14 @@ pub fn person_only(id: &str) -> bool {
     id.starts_with("agent.")
 }
 
-/// A parameter, by its ID or its name.
+/// A parameter, by its ID, its name or its path.
 #[derive(Clone, Debug, PartialEq, Deserialize, Serialize, JsonSchema)]
 #[serde(untagged)]
 pub enum ParamRef {
     /// Its ID, which never changes.
     Id(u32),
-    /// Its name, as the host shows it, in any case.
+    /// Its name as the host shows it, such as `FX 1 Drive`, or its path,
+    /// such as `fx "1" / param "Drive"`, in any case.
     Name(String),
 }
 
@@ -81,8 +89,10 @@ pub struct NewValue {
 pub struct ParamState {
     /// Its ID, which never changes.
     pub id: u32,
-    /// Its name.
+    /// Its name, as the host shows it.
     pub name: String,
+    /// Its path, such as `osc "A" / param "Level"`.
+    pub path: String,
     /// What it does.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub description: String,
@@ -101,19 +111,22 @@ pub struct ParamState {
 }
 
 impl ParamState {
-    /// `descriptor` at `value`.
+    /// The parameter `view` describes, with `stored` the value kept for
+    /// it.
     #[must_use]
-    pub fn new(descriptor: &ParamDescriptor, value: f64) -> Self {
+    pub fn new(view: &ParamView, stored: f64) -> Self {
+        let d = &view.descriptor;
         Self {
-            id: descriptor.id.0,
-            name: descriptor.name.clone(),
-            description: descriptor.description.clone(),
-            kind: descriptor.kind.clone(),
-            min: descriptor.min(),
-            max: descriptor.max(),
-            default: descriptor.default,
-            value,
-            text: descriptor.format(value),
+            id: view.id.0,
+            name: view.name.clone(),
+            path: view.path.to_string(),
+            description: d.description.clone(),
+            kind: d.kind.clone(),
+            min: d.min(),
+            max: d.max(),
+            default: d.default,
+            value: view.real(stored),
+            text: view.format(stored),
         }
     }
 }
@@ -180,9 +193,10 @@ pub fn register(registry: &mut Registry) -> Result<(), RegisterError> {
     registry.register(
         CommandSpec::new(GET, "Get Parameters")
             .description(
-                "Reads the plug-in's parameters: each one's ID, name, what it does, its kind and \
-                 range, its default, and its value now as a number in its own units and as the \
-                 host shows it. Give `params` to read only some, by ID or name.",
+                "Reads the plug-in's parameters: each one's ID, name, path, what it does, its kind \
+                 and range, its default, and its value now as a number in its own units and as \
+                 the host shows it. Give `params` to read only some, by ID, name or path. A \
+                 slot's parameters are its current module's.",
             )
             .permission(Permission::Read)
             .context(Context::Global)
@@ -196,7 +210,9 @@ pub fn register(registry: &mut Registry) -> Result<(), RegisterError> {
                  records like a person's: its automation, undo and saved project follow. Give \
                  each new value as a number in the parameter's own units or as text the host \
                  would show, such as `-6 dB`. Values are clamped to each parameter's range. \
-                 Returns the parameters it set, with their new values.",
+                 Values apply in order: set a slot's type first, then its new module's \
+                 parameters, in the same call. Returns the parameters it set, with their new \
+                 values.",
             )
             .permission(Permission::Edit)
             .context(Context::Global)
@@ -251,27 +267,53 @@ pub(crate) fn parse<T: for<'de> Deserialize<'de>>(args: &Value) -> Result<T, Str
     serde_json::from_value(args).map_err(|e| format!("the arguments don't fit: {e}"))
 }
 
-/// The parameter `param` names.
-///
-/// # Errors
-///
-/// No parameter has that ID or name.
-pub fn resolve<'a>(
+/// The values the parameters would have after `pending` changes (ID and
+/// stored value, in order), for reading a call's later values as its
+/// earlier ones leave the slots.
+fn value_of<'a>(
     values: &'a ParamValues,
-    param: &ParamRef,
-) -> Result<&'a ParamDescriptor, String> {
-    let found = match param {
-        ParamRef::Id(id) => values.descriptor(ParamId(*id)),
-        ParamRef::Name(name) => values
-            .descriptors()
+    pending: &'a [(ParamId, f64)],
+) -> impl Fn(ParamId) -> Option<f64> + 'a {
+    move |id| {
+        pending
             .iter()
-            .find(|d| d.name.eq_ignore_ascii_case(name.trim())),
-    };
+            .rev()
+            .find(|(p, _)| *p == id)
+            .map(|(_, v)| *v)
+            .or_else(|| values.get(id))
+    }
+}
+
+/// What parameter `id` is once `pending` changes are made.
+fn view_after(values: &ParamValues, id: ParamId, pending: &[(ParamId, f64)]) -> Option<ParamView> {
+    match values.space() {
+        Some(space) => space.view(id, &value_of(values, pending)),
+        None => values.view(id),
+    }
+}
+
+/// The visible parameter `param` names once `pending` changes are made.
+fn resolve_after(
+    values: &ParamValues,
+    param: &ParamRef,
+    pending: &[(ParamId, f64)],
+) -> Result<ParamView, String> {
+    let found = match param {
+        ParamRef::Id(id) => view_after(values, ParamId(*id), pending),
+        ParamRef::Name(name) => match values.space() {
+            Some(space) => space.find(name, &value_of(values, pending)),
+            None => values.find(name),
+        }
+        .and_then(|id| view_after(values, id, pending)),
+    }
+    .filter(|view| !view.hidden);
     found.ok_or_else(|| {
         let names: Vec<String> = values
             .descriptors()
             .iter()
-            .map(|d| format!("{} ({})", d.name, d.id.0))
+            .filter_map(|d| view_after(values, d.id, pending))
+            .filter(|v| !v.hidden)
+            .map(|v| format!("{} ({})", v.name, v.id.0))
             .collect();
         format!(
             "no parameter is {}; the parameters are {}",
@@ -284,7 +326,19 @@ pub fn resolve<'a>(
     })
 }
 
-/// The parameters `refs` name (every one if it's empty), with their values.
+/// The parameter `param` names, as it is now: by ID, by name as the host
+/// shows it, or by path. A slot's reserved parameter its module doesn't use
+/// names nothing.
+///
+/// # Errors
+///
+/// No visible parameter has that ID, name or path.
+pub fn resolve(values: &ParamValues, param: &ParamRef) -> Result<ParamView, String> {
+    resolve_after(values, param, &[])
+}
+
+/// The parameters `refs` name (every visible one if it's empty), with
+/// their values.
 ///
 /// # Errors
 ///
@@ -295,46 +349,53 @@ pub fn get(values: &ParamValues, refs: &[ParamRef]) -> Result<ParamsResult, Stri
             .descriptors()
             .iter()
             .enumerate()
-            .map(|(index, d)| ParamState::new(d, values.value_at(index)))
+            .filter_map(|(index, d)| {
+                let view = values.view(d.id)?;
+                (!view.hidden).then(|| ParamState::new(&view, values.value_at(index)))
+            })
             .collect()
     } else {
         refs.iter()
             .map(|r| {
-                let d = resolve(values, r)?;
-                Ok(ParamState::new(d, values.get(d.id).unwrap_or(d.default)))
+                let view = resolve(values, r)?;
+                let stored = values.get(view.id).unwrap_or(view.descriptor.default);
+                Ok(ParamState::new(&view, stored))
             })
             .collect::<Result<_, String>>()?
     };
     Ok(ParamsResult { params })
 }
 
-/// The values `args` would set, resolved and clamped, without setting them.
+/// The values `args` would set, resolved and clamped, without setting them:
+/// each parameter's ID and the value to keep for it, in order. Each value
+/// is read as the ones before it leave the slots, so a slot's type comes
+/// before its new module's parameters.
 ///
 /// # Errors
 ///
 /// A value names no parameter, gives both or neither of `value` and
 /// `text`, or has text the parameter can't read.
 pub fn plan(values: &ParamValues, args: &SetArgs) -> Result<Vec<(ParamId, f64)>, String> {
-    args.values
-        .iter()
-        .map(|new| {
-            let d = resolve(values, &new.param)?;
-            let value = match (new.value, new.text.as_deref()) {
-                (Some(value), None) if value.is_finite() => value,
-                (Some(_), None) => return Err(format!("{}'s value isn't a number", d.name)),
-                (None, Some(text)) => d
-                    .parse(text)
-                    .ok_or_else(|| format!("`{text}` isn't a value {} can take", d.name))?,
-                _ => {
-                    return Err(format!(
-                        "give {} either a `value` or a `text`, not both or neither",
-                        d.name
-                    ));
-                }
-            };
-            Ok((d.id, d.clamp(value)))
-        })
-        .collect()
+    let mut planned: Vec<(ParamId, f64)> = Vec::new();
+    for new in &args.values {
+        let view = resolve_after(values, &new.param, &planned)?;
+        let d = &view.descriptor;
+        let real = match (new.value, new.text.as_deref()) {
+            (Some(value), None) if value.is_finite() => value,
+            (Some(_), None) => return Err(format!("{}'s value isn't a number", view.name)),
+            (None, Some(text)) => d
+                .parse(text)
+                .ok_or_else(|| format!("`{text}` isn't a value {} can take", view.name))?,
+            _ => {
+                return Err(format!(
+                    "give {} either a `value` or a `text`, not both or neither",
+                    view.name
+                ));
+            }
+        };
+        planned.push((view.id, view.stored(d.clamp(real))));
+    }
+    Ok(planned)
 }
 
 /// The parameter changes of one call, which the host takes as one step:
@@ -409,8 +470,8 @@ pub(crate) fn run_params(
             let params = planned
                 .iter()
                 .filter_map(|&(id, _)| {
-                    let d = values.descriptor(id)?;
-                    Some(ParamState::new(d, values.get(id)?))
+                    let view = values.view(id)?;
+                    Some(ParamState::new(&view, values.get(id)?))
                 })
                 .collect();
             Ok(ParamsResult { params })
