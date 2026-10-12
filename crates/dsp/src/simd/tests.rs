@@ -199,3 +199,153 @@ fn levels_are_chosen_from_what_the_cpu_has() {
     }
     assert_eq!(Level::parse("mmx"), None);
 }
+
+/// Integer test data: `n` values across the whole `u32` range, with the
+/// edges mixed in.
+fn words(seed: u64, n: usize) -> Vec<u32> {
+    let mut state = seed;
+    (0..n)
+        .map(|i| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            match i % 61 {
+                7 => 0,
+                19 => u32::MAX,
+                29 => 1 << 31,
+                _ => (state >> 32) as u32,
+            }
+        })
+        .collect()
+}
+
+/// What [`IntOps`] makes: each operation's result for every lane.
+#[derive(Debug, Default)]
+struct IntResults {
+    words: Vec<(&'static str, Vec<u32>)>,
+    floats: Vec<(&'static str, Vec<f32>)>,
+}
+
+/// Runs every integer lane operation, the conversions and a gather.
+struct IntOps<'a> {
+    a: &'a [u32],
+    b: &'a [u32],
+    x: &'a [f32],
+    table: &'a [f32],
+}
+
+impl Kernel for IntOps<'_> {
+    type Output = IntResults;
+
+    #[inline(always)]
+    fn run<S: F32s>(self) -> IntResults {
+        type U<S> = <S as F32s>::U32s;
+        type Op<S> = (&'static str, fn(U<S>, U<S>) -> U<S>);
+        let ops: [Op<S>; 9] = [
+            ("add", U32s::wrapping_add),
+            ("sub", U32s::wrapping_sub),
+            ("mul", U32s::wrapping_mul),
+            ("mul_high", U32s::mul_high),
+            ("shl", |a, _| a.shl::<23>()),
+            ("shr", |a, _| a.shr::<8>()),
+            ("min", U32s::min),
+            ("max", U32s::max),
+            ("to_i32", |a, _| S::from_bits(a).to_i32()),
+        ];
+        let n = self.a.len();
+        let mut results = IntResults::default();
+        for (name, op) in ops {
+            let mut out = vec![0; n];
+            for at in (0..n).step_by(S::LANES) {
+                op(U::<S>::load(&self.a[at..]), U::<S>::load(&self.b[at..])).store(&mut out[at..]);
+            }
+            results.words.push((name, out));
+        }
+        let mut bits = vec![0; n];
+        let mut floor = vec![0.0; n];
+        let mut from_i32 = vec![0.0; n];
+        let mut gathered = vec![0.0; 3 * n];
+        for at in (0..n).step_by(S::LANES) {
+            let x = S::load(&self.x[at..]);
+            x.to_bits().store(&mut bits[at..]);
+            x.floor().store(&mut floor[at..]);
+            S::from_i32(U::<S>::load(&self.a[at..])).store(&mut from_i32[at..]);
+            let rows = S::gather::<3>(self.table, U::<S>::load(&self.b[at..]).shr::<20>());
+            for (j, row) in rows.iter().enumerate() {
+                row.store(&mut gathered[j * n + at..]);
+            }
+        }
+        results.words.push(("to_bits", bits));
+        results.floats.push(("floor", floor));
+        results.floats.push(("from_i32", from_i32));
+        results.floats.push(("gather", gathered));
+        results
+    }
+}
+
+#[test]
+fn every_path_matches_the_portable_one_for_integer_lanes() {
+    let n = 1_024;
+    let (a, b) = (words(6, n), words(7, n));
+    // Floats in i32's range for the conversions, and a table smaller than
+    // the indices reach, so the gather clamps.
+    let x = data(8, n);
+    let table: Vec<f32> = (0..3_000).map(|i| i as f32 * 0.5).collect();
+    let ops = || IntOps {
+        a: &a,
+        b: &b,
+        x: &x,
+        table: &table,
+    };
+    let reference = dispatch_at(Level::Portable, ops()).unwrap_or_else(|_| unreachable!());
+
+    // The portable path against plain Rust.
+    let words = |name| &reference.words.iter().find(|(n, _)| *n == name).unwrap().1;
+    for i in 0..n {
+        assert_eq!(words("add")[i], a[i].wrapping_add(b[i]));
+        assert_eq!(words("mul")[i], a[i].wrapping_mul(b[i]));
+        assert_eq!(
+            words("mul_high")[i],
+            ((u64::from(a[i]) * u64::from(b[i])) >> 32) as u32
+        );
+        assert_eq!(words("shr")[i], a[i] >> 8);
+        assert_eq!(words("to_bits")[i], x[i].to_bits());
+    }
+    let gathered = &reference.floats[2].1;
+    for i in 0..n {
+        let at = ((b[i] >> 20) as usize).min(table.len() - 3);
+        for j in 0..3 {
+            assert_eq!(
+                gathered[j * n + i],
+                table[at + j],
+                "gather lane {i} row {j}"
+            );
+        }
+    }
+
+    for level in Level::ALL {
+        let Ok(results) = dispatch_at(level, ops()) else {
+            continue;
+        };
+        for ((name, got), (_, want)) in results.words.iter().zip(&reference.words) {
+            for (i, (got, want)) in got.iter().zip(want).enumerate() {
+                // Out-of-range conversions are unspecified.
+                if *name == "to_i32" && f32::from_bits(a[i]).abs() >= 2.0e9 {
+                    continue;
+                }
+                if *name == "to_i32" && f32::from_bits(a[i]).is_nan() {
+                    continue;
+                }
+                assert!(got == want, "{level} {name} at {i}: {got} against {want}");
+            }
+        }
+        for ((name, got), (_, want)) in results.floats.iter().zip(&reference.floats) {
+            for (i, (got, want)) in got.iter().zip(want).enumerate() {
+                assert!(
+                    got.to_bits() == want.to_bits() || got.is_nan() && want.is_nan(),
+                    "{level} {name} at {i}: {got} against {want}"
+                );
+            }
+        }
+    }
+}

@@ -455,7 +455,9 @@ impl<'a> Compiler<'a> {
                     || aux_read.is_some_and(|(r, _)| r.is_voice())
                     || matches!(amount, Gain::Fed { voice: true, .. })
                     || matches!(output, Gain::Fed { voice: true, .. });
-                let width = if voice { stride as u32 } else { 1 };
+                // A slew keeps a state per voice lane even for a global
+                // route, which evaluates a whole lane group and takes one.
+                let width = stride as u32;
                 let mut input = |(read, bipolar): (Read, bool), curve: &Curve| -> Input {
                     let lut = (!curve.is_linear()).then(|| {
                         let at = luts.len() as u32;

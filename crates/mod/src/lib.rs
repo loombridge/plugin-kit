@@ -95,7 +95,6 @@ pub mod commands;
 pub mod curve;
 pub mod dest;
 pub mod engine;
-mod lanes;
 pub mod mailbox;
 pub mod matrix;
 pub mod program;

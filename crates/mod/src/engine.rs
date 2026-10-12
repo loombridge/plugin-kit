@@ -8,7 +8,6 @@ use lspk_dsp::simd::{self, F32s, Kernel, Level};
 use crate::CONTROL_PERIOD;
 use crate::curve::lookup;
 use crate::dest::{DestId, Destinations};
-use crate::lanes::One;
 use crate::mailbox::ProgramReceiver;
 use crate::matrix::SLOTS;
 use crate::program::{Base, Config, Gain, Input, Plan, Program, Read, Route};
@@ -1151,6 +1150,14 @@ fn sweep<S: F32s, const N: usize>(
     }
 }
 
+/// Lane `i` of `x`.
+#[inline(always)]
+fn lane<S: F32s>(x: S, i: usize) -> f32 {
+    let mut lanes = [0.0; crate::MAX_LANES];
+    x.store(&mut lanes);
+    lanes[i]
+}
+
 /// Clamps every value of `values` to `min` to `max`.
 #[inline(always)]
 fn clamp<S: F32s>(values: &mut [f32], min: f32, max: f32) {
@@ -1226,7 +1233,10 @@ fn audio_route<S: F32s>(
             let mut x = S::splat(0.0);
             for (j, k) in frames.clone().enumerate() {
                 if j == 0 || !r.steady {
-                    x = S::splat(route_value::<One>(r, ri, env, slew, k, 0, 1.0, false).0);
+                    x = S::splat(lane(
+                        route_value::<S>(r, ri, env, slew, k, 0, 1.0, false),
+                        0,
+                    ));
                 }
                 for &v0 in groups {
                     add(region, j, v0, x);
@@ -1235,15 +1245,16 @@ fn audio_route<S: F32s>(
         }
         (true, false) => {
             if let Some(n) = newest {
+                let v0 = n / S::LANES * S::LANES;
                 for (j, k) in frames.enumerate() {
-                    region[j * w] +=
-                        route_value::<One>(r, ri, env, slew, k, n, 1.0, snap && j == 0).0;
+                    let x = route_value::<S>(r, ri, env, slew, k, v0, 1.0, snap && j == 0);
+                    region[j * w] += lane(x, n - v0);
                 }
             }
         }
         (false, false) => {
             for (j, k) in frames.enumerate() {
-                region[j * w] += route_value::<One>(r, ri, env, slew, k, 0, 1.0, false).0;
+                region[j * w] += lane(route_value::<S>(r, ri, env, slew, k, 0, 1.0, false), 0);
             }
         }
     }
@@ -1280,20 +1291,26 @@ fn accumulate<S: F32s>(
             }
         }
         (false, true) => {
-            let x = S::splat(route_value::<One>(r, ri, env, slew, k, 0, steps, false).0);
+            let x = S::splat(lane(
+                route_value::<S>(r, ri, env, slew, k, 0, steps, false),
+                0,
+            ));
             for &v0 in groups {
                 (S::load(&out[v0..]) + x).store(&mut out[v0..]);
             }
         }
         // A per-voice route into a global destination: the newest voice's
-        // value (engine-core R113, a first rule until observed).
+        // value (engine-core R113, a first rule until observed), from the
+        // lane group that holds it.
         (true, false) => {
             if let Some(n) = newest {
-                out[0] += route_value::<One>(r, ri, env, slew, k, n, steps, snap).0;
+                let v0 = n / S::LANES * S::LANES;
+                let x = route_value::<S>(r, ri, env, slew, k, v0, steps, snap);
+                out[0] += lane(x, n - v0);
             }
         }
         (false, false) => {
-            out[0] += route_value::<One>(r, ri, env, slew, k, 0, steps, false).0;
+            out[0] += lane(route_value::<S>(r, ri, env, slew, k, 0, steps, false), 0);
         }
     }
 }
