@@ -31,6 +31,7 @@ lspk-ui = { path = "crates/ui" }
 # Without its formats by default; a plug-in crate turns on the ones it exports.
 lspk-plugin = { path = "crates/plugin", default-features = false }
 lspk-test = { path = "crates/test" }
+lspk-clap-wrapper = { path = "crates/clap-wrapper" }
 
 [workspace.lints.rust]
 rust_2018_idioms = { level = "warn", priority = -1 }

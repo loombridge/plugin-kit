@@ -4,7 +4,7 @@ The plug-in kit is a set of Rust crates for building audio plug-ins: real-time s
 
 [Reagent](https://github.com/loombridge/reagent), a wavetable synthesiser, is the first plug-in built on it.
 
-The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands`, `lspk-agent`, `lspk-plugin` (with its CLAP export and editor hosting), `lspk-ui` (editors embedded in the host's window, and a generic interface for any plug-in's parameters) and `lspk-test` (the headless test harness) hold working code, every other crate is still a stub, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
+The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands`, `lspk-agent`, `lspk-plugin` (with its CLAP, VST3 and Audio Unit v2 exports and editor hosting), `lspk-ui` (editors embedded in the host's window, and a generic interface for any plug-in's parameters) and `lspk-test` (the headless test harness, with CLAP, VST3 and Audio Unit hosts) hold working code, every other crate is still a stub, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
 
 ## Crates
 
@@ -25,9 +25,10 @@ Every crate carries the prefix `lspk-`.
 | `lspk-presets` | The preset format (documented, versioned JSON), the preset library, A/B compare, undo history |
 | `lspk-ui` | The egui widget set, theming, zoom, AccessKit, host-window embedding through baseview |
 | `lspk-plugin` | The format layer: the `Plugin` trait and its CLAP, VST3, Audio Unit, standalone and Beatlayer exports |
+| `lspk-clap-wrapper` | free-audio's [clap-wrapper](https://github.com/free-audio/clap-wrapper) and the SDK sources it needs (VST3 SDK, AudioUnitSDK), vendored and built with `cc`, which make the VST3 and Audio Unit v2 exports from the CLAP one |
 | `lspk-test` | The headless test harness: renders, golden renders and null tests, measurements, format validators, a scripted MCP client |
 
-Two example plug-ins under `examples/`, never published, show the `Plugin` trait at its smallest and prove the CLAP export: `lspk-example-gain`, a stereo gain, and `lspk-example-sine`, an eight-voice sine instrument.
+Two example plug-ins under `examples/`, never published, show the `Plugin` trait at its smallest and prove the format exports: `lspk-example-gain`, a stereo gain, and `lspk-example-sine`, an eight-voice sine instrument.
 
 ## Develop
 
@@ -45,14 +46,20 @@ Two example plug-ins under `examples/`, never published, show the `Plugin` trait
    cargo xtask check
    ```
 
-1. To try a plug-in in a host, or check it with [clap-validator](https://github.com/free-audio/clap-validator), build it as a CLAP file in `target/bundle`:
+1. To try a plug-in in a host, build it in every format in `target/bundle`: a `.clap`, a `.vst3` and, on macOS, a `.component` (Audio Unit v2), each signed ad hoc on macOS so hosts load it.
 
    ```sh
    cargo xtask bundle lspk-example-gain lspk-example-sine
    clap-validator validate target/bundle/*.clap
    ```
 
-   `cargo xtask validate` does both for the example plug-ins, as CI does.
+1. To run every format's validators on them: clap-validator; Steinberg's VST3 validator, which xtask builds from the vendored VST3 SDK; on macOS `auval`, with each `.component` installed in `~/Library/Audio/Plug-Ins/Components` while it runs; and [pluginval](https://github.com/Tracktion/pluginval) at strictness 5 when it's on the `PATH` (a release you install yourself, as CI does on macOS; it isn't part of the repository). With no crates named, `cargo xtask validate` checks the example plug-ins, as CI does.
+
+   ```sh
+   cargo xtask validate lspk-example-gain lspk-example-sine
+   ```
+
+   A plug-in's Audio Unit type, subtype and manufacturer codes come from its info, as `lspk_plugin::bundle::AuCodes` describes; `cargo xtask bundle` prints them.
 
 1. Golden renders are null-tested by `cargo xtask check`. When a change to a plug-in's sound is intended, remake its references and say why in the pull request:
 

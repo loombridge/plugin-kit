@@ -41,6 +41,9 @@ serde = { version = "1.0.228", default-features = false, features = ["std", "der
 serde_json = "1"
 # Audio an agent tool returns, which comes as WAV.
 hound = "3.5.1"
+# A VST3 host for tests: bindings generated from the VST3 SDK's headers,
+# pinned exactly as clack is.
+vst3 = "=0.3.0"
 
 [dev-dependencies]
 lspk-commands.workspace = true

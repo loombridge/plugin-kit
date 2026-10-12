@@ -33,7 +33,7 @@ The kit is MIT OR Apache-2.0 so that any plug-in can build on it, whatever its o
    cargo xtask check
    ```
 
-   It runs format, clippy with warnings denied, the tests under cargo-nextest and then the doctests, the layer rules, `cargo deny`, and a self-test that proves `deny.toml` still rejects copyleft licences.
+   It runs format, clippy with warnings denied, the tests under cargo-nextest and then the doctests, the layer rules, `cargo deny`, a self-test that proves `deny.toml` still rejects copyleft licences, and the licence check of the vendored C and C++ code. A change to a plug-in format also runs the formats' validators, `cargo xtask validate`, as CI does.
 
 ## Commit
 

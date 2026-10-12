@@ -7,6 +7,8 @@ use std::process::Command;
 use lspk_test::golden::UPDATE_ENV;
 use lspk_test::validate::{Format, Validator, clap_bundle};
 
+use crate::formats;
+
 /// The plug-in crates `cargo xtask validate` checks when none are named.
 pub const EXAMPLES: &[&str] = &["lspk-example-gain", "lspk-example-sine"];
 
@@ -71,37 +73,65 @@ pub fn golden(root: &Path, options: &[String]) -> Result<(), String> {
 }
 
 /// Bundles each plug-in crate (the examples if none are named) and runs
-/// every validator of each format it built.
+/// every validator of each format it built: on macOS, each Audio Unit is
+/// installed in the user's Audio Unit folder while its validators run, and
+/// removed after.
 pub fn validate(root: &Path, packages: &[String]) -> Result<(), String> {
     let packages: Vec<String> = if packages.is_empty() {
         EXAMPLES.iter().map(|p| (*p).to_owned()).collect()
     } else {
         packages.to_vec()
     };
-    super::bundle(root, &packages)?;
-    let metadata = super::cargo_metadata(root)?;
-    let target = metadata["target_directory"]
-        .as_str()
-        .map(PathBuf::from)
-        .ok_or("cargo metadata gave no target directory")?;
-    // Each format `cargo xtask bundle` builds, with its bundles. The VST3
-    // and Audio Unit exports add theirs here.
-    let built: Vec<(Format, Vec<PathBuf>)> = vec![(
-        Format::Clap,
-        packages.iter().map(|p| clap_bundle(&target, p)).collect(),
-    )];
+    let bundled = formats::bundle(root, &packages)?;
+    let target = formats::target_dir(root)?;
+
+    // Steinberg's validator, built from the vendored SDK, goes first on the
+    // PATH.
+    let tools = formats::build_vst3_validator(root)?;
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(std::iter::once(tools).chain(std::env::split_paths(&path)))
+        .map_err(|e| format!("couldn't extend PATH: {e}"))?;
+    // SAFETY: xtask runs on one thread, and nothing reads the environment
+    // while it changes.
+    unsafe { std::env::set_var("PATH", path) };
+
+    let mut installed = Vec::new();
+    for plugin in &bundled {
+        if let Some(component) = &plugin.auv2 {
+            installed.push(formats::install_component(component)?);
+        }
+    }
+    // Each format `cargo xtask bundle` builds, with its bundles.
+    let mut built: Vec<(Format, Vec<PathBuf>)> = vec![
+        (
+            Format::Clap,
+            packages.iter().map(|p| clap_bundle(&target, p)).collect(),
+        ),
+        (
+            Format::Vst3,
+            bundled.iter().map(|b| b.vst3.clone()).collect(),
+        ),
+    ];
+    if !installed.is_empty() {
+        built.push((Format::Auv2, installed.clone()));
+    }
     let mut failed = Vec::new();
     for (format, bundles) in &built {
         for validator in Validator::for_format(*format) {
-            eprintln!("\n==> {}", validator.program());
+            let name = format!("{} ({format:?})", validator.program());
+            eprintln!("\n==> {name}");
             match validator.run(bundles) {
                 Ok(summary) => eprintln!("{summary}"),
                 Err(message) => {
                     eprintln!("{message}");
-                    failed.push(validator.program());
+                    failed.push(name);
                 }
             }
         }
+    }
+    for component in &installed {
+        std::fs::remove_dir_all(component)
+            .map_err(|e| format!("couldn't remove {}: {e}", component.display()))?;
     }
     if failed.is_empty() {
         Ok(())
