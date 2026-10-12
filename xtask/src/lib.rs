@@ -111,8 +111,6 @@ pub const REJECTS_AGPL: &[&str] = &["AGPL-3.0-or-later"];
 /// built on it ([`Repo::plugin`]).
 #[derive(Clone, Copy, Debug)]
 pub struct Repo {
-    /// Its xtask crate's package name.
-    pub xtask: &'static str,
     /// The plug-in crates `cargo xtask validate` checks when none are named.
     pub plugins: &'static [&'static str],
     /// Crates that never depend on `lspk-ui` or reach a UI toolkit, so they
@@ -133,8 +131,8 @@ pub struct Repo {
 }
 
 impl Repo {
-    /// A plug-in repository whose xtask crate is `xtask`, whose plug-in
-    /// crates are `plugins`, and whose deny.toml rejects `rejects`
+    /// A plug-in repository whose xtask crate is `xtask` (which is
+    /// headless), whose plug-in crates are `plugins`, and whose deny.toml rejects `rejects`
     /// ([`REJECTS_COPYLEFT`] or [`REJECTS_AGPL`]).
     #[must_use]
     pub const fn plugin(
@@ -142,7 +140,6 @@ impl Repo {
         rejects: &'static [&'static str],
     ) -> Self {
         Self {
-            xtask: "xtask",
             plugins,
             headless: &["xtask"],
             downstream: no_crate,
@@ -171,7 +168,6 @@ fn no_crate(_: &str) -> bool {
 
 /// The plug-in kit.
 pub const KIT: Repo = Repo {
-    xtask: "lspk-xtask",
     plugins: harness::EXAMPLES,
     headless: &[
         "lspk-rt",

@@ -1,7 +1,17 @@
 {
   "about": "Instructions each benchmark's measured region runs, counted by Callgrind on x86-64 Linux at the AVX2 SIMD level. CI fails a pull request that makes any of them more than 3 % higher; change them only with `cargo xtask bench --update-baseline --reason ...`, and say why in the pull request.",
+  "instructions": {
+    "instrument/chord/create": 28947,
+    "instrument/chord/idle": 634500,
+    "instrument/chord/load-state": 1904,
+    "instrument/chord/process": 55194784,
+    "instrument/one-voice/create": 29169,
+    "instrument/one-voice/idle": 634500,
+    "instrument/one-voice/load-state": 1904,
+    "instrument/one-voice/process": 7562882
+  },
   "platform": "x86_64-linux",
+  "reason": "The instrument template's first counts, made by the plug-in kit's template CI job.",
   "simd": "avx2",
-  "valgrind": null,
-  "instructions": {}
+  "valgrind": "valgrind-3.22.0"
 }

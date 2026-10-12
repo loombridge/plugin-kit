@@ -1,7 +1,17 @@
 {
   "about": "Instructions each benchmark's measured region runs, counted by Callgrind on x86-64 Linux at the AVX2 SIMD level. CI fails a pull request that makes any of them more than 3 % higher; change them only with `cargo xtask bench --update-baseline --reason ...`, and say why in the pull request.",
+  "instructions": {
+    "effect/automation/create": 19681,
+    "effect/automation/idle": 7695375,
+    "effect/automation/load-state": 1905,
+    "effect/automation/process": 16204573,
+    "effect/small-blocks/create": 19621,
+    "effect/small-blocks/idle": 3037500,
+    "effect/small-blocks/load-state": 1905,
+    "effect/small-blocks/process": 2347677
+  },
   "platform": "x86_64-linux",
+  "reason": "The effect template's first counts, made by the plug-in kit's template CI job.",
   "simd": "avx2",
-  "valgrind": null,
-  "instructions": {}
+  "valgrind": "valgrind-3.22.0"
 }
