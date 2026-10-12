@@ -1,6 +1,11 @@
 {
   "about": "Instructions each benchmark's measured region runs, counted by Callgrind on x86-64 Linux at the AVX2 SIMD level. CI fails a pull request that makes any of them more than 3 % higher; change them only with `cargo xtask bench --update-baseline --reason ...`, and say why in the pull request.",
   "instructions": {
+    "lspk-dsp/envelope/idle-32": 11272,
+    "lspk-dsp/envelope/one": 3534,
+    "lspk-dsp/envelope/scalar-32": 120781,
+    "lspk-dsp/envelope/simd-32": 28481,
+    "lspk-dsp/envelope/sustain-32": 11272,
     "lspk-dsp/lfo/drawn/scalar": 2301784,
     "lspk-dsp/lfo/drawn/simd": 1789936,
     "lspk-dsp/lfo/lorenz/scalar": 3364716,
@@ -30,7 +35,7 @@
     "lspk-example-sine/one-voice/process": 7578149
   },
   "platform": "x86_64-linux",
-  "reason": "R1.12 adds lspk-dsp's LFO benchmarks (drawn, path and Lorenz types for 32 voices, scalar and SIMD); simd/mix moves from 352 to 363 instructions from code layout alone, its kernel unchanged.",
+  "reason": "R1.12 adds lspk-dsp's LFO benchmarks (drawn, path and Lorenz types for 32 voices, scalar and SIMD), beside R1.11's envelope benchmarks; simd/mix moves from 352 to 363 instructions from code layout alone, its kernel unchanged.",
   "simd": "avx2",
   "valgrind": "valgrind-3.22.0"
 }
