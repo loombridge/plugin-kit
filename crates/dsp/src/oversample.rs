@@ -141,6 +141,15 @@ impl Oversampler {
         (1..=self.stages).map(|s| ((TAPS - 1) >> s) as u32).sum()
     }
 
+    /// How many frames, at the original rate, the way down alone
+    /// ([`decimate`](Self::decimate)) delays the audio by.
+    #[must_use]
+    pub fn decimation_latency(&self) -> u32 {
+        (1..=self.stages)
+            .map(|s| ((TAPS - 1) >> (s + 1)) as u32)
+            .sum()
+    }
+
     /// Clears the filters, as after a jump in the song.
     pub fn reset(&mut self) {
         for stage in self.state.iter_mut().flatten() {
@@ -164,6 +173,53 @@ impl Oversampler {
         }
         for piece in samples.chunks_mut(self.max_frames) {
             self.piece(channel, piece, &mut f);
+        }
+    }
+
+    /// The way down alone, for a process that makes its audio at the higher
+    /// rate itself, such as a synthesiser's voices: channel `channel`'s
+    /// `high` holds `factor` samples for each frame of `out`, which takes
+    /// them filtered and brought down to the original rate. `high` is used
+    /// as scratch. Longer runs than `max_frames` go in pieces. With no
+    /// stages, `out` takes `high` as it is.
+    ///
+    /// # Panics
+    ///
+    /// If `channel` isn't less than the channels it was made for, or `high`
+    /// doesn't hold `factor` samples for each frame of `out`.
+    pub fn decimate(&mut self, channel: usize, high: &mut [f32], out: &mut [f32]) {
+        assert!(channel < self.channels, "channel {channel} out of range");
+        let factor = self.factor();
+        assert_eq!(
+            high.len(),
+            out.len() * factor,
+            "`high` holds {factor} samples a frame"
+        );
+        if self.stages == 0 {
+            out.copy_from_slice(high);
+            return;
+        }
+        let taps = &self.taps;
+        let state = &mut self.state[channel];
+        for (high, out) in high
+            .chunks_mut(self.max_frames * factor)
+            .zip(out.chunks_mut(self.max_frames))
+        {
+            let n = out.len();
+            for s in (0..self.stages as usize).rev() {
+                let history = &mut state[s].down;
+                let len = n << s;
+                // Each stage halves the run in place: sample i takes the
+                // filter's output after inputs 2i and 2i + 1 arrive, which
+                // are never overwritten before they're read.
+                for i in 0..len {
+                    history.push(high[2 * i]);
+                    let filtered = history.filter(taps);
+                    history.push(high[2 * i + 1]);
+                    high[i] = filtered;
+                }
+            }
+            out.copy_from_slice(&high[..n]);
         }
     }
 
@@ -270,6 +326,43 @@ mod tests {
             im += f64::from(*s) * phase.sin();
         }
         2.0 * (re * re + im * im).sqrt() / samples.len() as f64
+    }
+
+    #[test]
+    fn the_way_down_alone_passes_the_band_and_stops_what_would_alias() {
+        for stages in 0..=MAX_STAGES {
+            let factor = 1usize << stages;
+            let mut os = Oversampler::new(stages, 1, 100);
+            let latency = os.decimation_latency() as usize;
+            assert_eq!(latency, [0, 16, 24, 28][stages as usize]);
+            let frames = 4800;
+            let high_sine = |hz: f64| -> Vec<f32> {
+                (0..frames * factor)
+                    .map(|i| (TAU * hz * i as f64 / (RATE * factor as f64)).sin() as f32)
+                    .collect()
+            };
+            // 1 kHz comes through, delayed by the latency.
+            let mut high = high_sine(1000.0);
+            let mut out = vec![0.0; frames];
+            os.decimate(0, &mut high, &mut out);
+            let expected = sine(1000.0, frames);
+            for i in 1000..frames {
+                assert!(
+                    (out[i] - expected[i - latency]).abs() < 2e-3,
+                    "{stages} stages, frame {i}: {} against {}",
+                    out[i],
+                    expected[i - latency]
+                );
+            }
+            // 30 kHz, which would fold back to 18 kHz, is stopped.
+            if stages > 0 {
+                os.reset();
+                let mut high = high_sine(30_000.0);
+                os.decimate(0, &mut high, &mut out);
+                let peak = out[1000..].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+                assert!(peak < 1e-3, "{stages} stages: {peak}");
+            }
+        }
     }
 
     #[test]

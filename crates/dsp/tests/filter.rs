@@ -581,6 +581,50 @@ fn output_is_the_same_whatever_the_block_sizes() {
     }
 }
 
+// A voice engine processes only its sounding voices: the voices below the
+// span come out as a whole bank's do, and those above keep their audio and
+// state untouched.
+#[test]
+fn a_span_of_voices_processes_those_voices_alone() {
+    const VOICES: usize = 32;
+    for simd in [false, true] {
+        let make = || {
+            let mut bank = if simd {
+                FilterBank::new(RATE, VOICES, 2)
+            } else {
+                FilterBank::scalar(RATE, VOICES, 2)
+            };
+            bank.set_type(FilterType::Ladder24);
+            for v in 0..VOICES {
+                bank.reset_voice(v, &varied(v, 0));
+            }
+            bank
+        };
+        let mut whole = make();
+        let mut span = make();
+        let (pitch, audio) = test_input(&whole, 600, 11);
+        let stride = whole.stride();
+        let mut all = audio.clone();
+        whole.process(&pitch, &mut all);
+        let mut some = audio.clone();
+        span.process_voices(5, &pitch, &mut some);
+        let lanes = if simd { 16 } else { 1 };
+        let reached = 5usize.div_ceil(lanes) * lanes;
+        for f in 0..600 {
+            for c in 0..2 {
+                for v in 0..VOICES {
+                    let i = (f * 2 + c) * stride + v;
+                    let expected = if v < reached { all[i] } else { audio[i] };
+                    assert!(
+                        some[i] == expected || v >= 5 && v < reached,
+                        "simd {simd}, frame {f}, voice {v}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 // Every SIMD level this machine has gives the scalar path's results, to
 // within fused multiply-add's rounding.
 #[test]

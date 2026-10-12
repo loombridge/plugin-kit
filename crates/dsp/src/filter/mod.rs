@@ -1499,7 +1499,34 @@ impl FilterBank {
             "the audio holds as many frames as the pitch buffer"
         );
         let simd = self.simd;
-        self.dispatch(simd.then(simd::level), pitch, None, audio, frames);
+        let voices = self.voices;
+        self.dispatch(simd.then(simd::level), voices, pitch, None, audio, frames);
+    }
+
+    /// As [`process`](Self::process), for the first `voices` voices only
+    /// (rounded up to a whole group of lanes): a voice engine whose sounding
+    /// voices are the lowest passes how many it has, and the voices above
+    /// keep their state untouched. The buffers keep the bank's full layout.
+    /// The Extended group's types process every voice.
+    ///
+    /// # Panics
+    ///
+    /// As [`process`](Self::process).
+    pub fn process_voices(&mut self, voices: usize, pitch: &[f32], audio: &mut [f32]) {
+        assert_eq!(
+            pitch.len() % self.stride,
+            0,
+            "the pitch buffer holds a whole number of frames"
+        );
+        let frames = pitch.len() / self.stride;
+        assert_eq!(
+            audio.len(),
+            frames * self.channels * self.stride,
+            "the audio holds as many frames as the pitch buffer"
+        );
+        let simd = self.simd;
+        let voices = voices.min(self.voices);
+        self.dispatch(simd.then(simd::level), voices, pitch, None, audio, frames);
     }
 
     /// As [`process`](Self::process), with the pole-zero filter's X and Y
@@ -1529,7 +1556,15 @@ impl FilterBank {
             "the audio holds as many frames as the pitch buffer"
         );
         let simd = self.simd;
-        self.dispatch(simd.then(simd::level), pitch, Some((x, y)), audio, frames);
+        let voices = self.voices;
+        self.dispatch(
+            simd.then(simd::level),
+            voices,
+            pitch,
+            Some((x, y)),
+            audio,
+            frames,
+        );
     }
 
     /// As [`process`](Self::process), with SIMD lanes at `level`, for tests
@@ -1546,7 +1581,8 @@ impl FilterBank {
         assert_eq!(pitch.len() % self.stride, 0);
         let frames = pitch.len() / self.stride;
         assert_eq!(audio.len(), frames * self.channels * self.stride);
-        self.dispatch(Some(level), pitch, None, audio, frames)
+        let voices = self.voices;
+        self.dispatch(Some(level), voices, pitch, None, audio, frames)
     }
 
     /// Runs the block with this bank's type, scalar or at `level`. Each type
@@ -1555,6 +1591,7 @@ impl FilterBank {
     fn dispatch(
         &mut self,
         level: Option<Level>,
+        voices: usize,
         pitch: &[f32],
         xy: Option<(&[f32], &[f32])>,
         audio: &mut [f32],
@@ -1570,12 +1607,14 @@ impl FilterBank {
         fn go<const N: usize, T: Topology<N>>(
             bank: &mut FilterBank,
             level: Option<Level>,
+            voices: usize,
             pitch: &[f32],
             audio: &mut [f32],
             frames: usize,
         ) -> bool {
             let run = Run::<N, T> {
                 bank,
+                voices,
                 pitch,
                 audio,
                 frames,
@@ -1690,7 +1729,7 @@ impl FilterBank {
             F::ShriekBp => go::<S, Shriek<true>>,
             _ => return extended::dispatch(self, level, pitch, xy, audio, frames),
         };
-        run(self, level, pitch, audio, frames)
+        run(self, level, voices, pitch, audio, frames)
     }
 }
 
@@ -1709,6 +1748,8 @@ pub fn hertz_of(pitch: f32, reference: f32) -> f32 {
 /// One call of [`FilterBank::process`], as a SIMD kernel.
 struct Run<'a, const N: usize, T> {
     bank: &'a mut FilterBank,
+    /// The voices to process, from the first.
+    voices: usize,
     pitch: &'a [f32],
     audio: &'a mut [f32],
     frames: usize,
@@ -1737,7 +1778,7 @@ impl<const N: usize, T: Topology<N>> Run<'_, N, T> {
     #[inline(always)]
     fn go<L: Lane>(self) {
         let bank = self.bank;
-        let groups = bank.voices.div_ceil(L::LANES);
+        let groups = self.voices.div_ceil(L::LANES);
         let alpha = 1.0 - (-1.0 / (SMOOTHING_SECONDS * bank.rate)).exp();
         let clean = 10f32.powf(-CLEAN_DB / 20.0);
         for c in 0..bank.channels {

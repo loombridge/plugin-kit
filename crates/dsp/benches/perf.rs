@@ -87,6 +87,27 @@ fn main() -> ExitCode {
         });
     }
 
+    // The way down alone, as a synthesiser rendering its voices at 2 and 4
+    // times the rate uses it: a block's worth of audio at the higher rate
+    // brought down.
+    for (stages, name) in [
+        (1, "oversampler/decimate-2x"),
+        (2, "oversampler/decimate-4x"),
+    ] {
+        suite.micro(name, BLOCK, move || {
+            let mut oversampler = Oversampler::new(stages, 1, BLOCK);
+            let factor = 1usize << stages;
+            let input = signal::sine(1_000.0, 48_000.0 * factor as f64, BLOCK * factor, 0.9);
+            let mut high = input.clone();
+            let mut out = vec![0.0; BLOCK];
+            move || {
+                high.copy_from_slice(&input);
+                oversampler.decimate(0, &mut high, &mut out);
+                black_box(&out);
+            }
+        });
+    }
+
     // Mixing one block into another at the SIMD level this CPU dispatches.
     suite.micro("simd/mix", BLOCK, || {
         let source = signal::noise(1, BLOCK, 0.5);

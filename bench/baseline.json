@@ -233,6 +233,8 @@
     "lspk-dsp/oversampler/2x": 502192,
     "lspk-dsp/oversampler/4x": 1503243,
     "lspk-dsp/oversampler/8x": 3505254,
+    "lspk-dsp/oversampler/decimate-2x": 170293,
+    "lspk-dsp/oversampler/decimate-4x": 509642,
     "lspk-dsp/simd/mix": 363,
     "lspk-dsp/smoother/glide": 7459,
     "lspk-example-gain/automation/create": 4687,
@@ -276,7 +278,7 @@
     "lspk-wavetable/unison/8x7/simd": 168373
   },
   "platform": "x86_64-linux",
-  "reason": "R1.7 adds unison's benchmarks: lspk-wavetable's 8 voices of 7 copies and 32 of 16, rendered and mixed to stereo, and lspk-voice's mix alone, each scalar and in SIMD (at AVX2, 19.5 instructions per voice-copy sample for 32 x 16 against 146 scalar; the mix alone 2.6). Their counts are from CI on the branch; every other count is main's, with R1.10's filter benchmarks. R1.19 adds the Extended filter group's benchmarks (twelve types, scalar and SIMD, and pole-zero-8-xy: all eight points active in every state, X-Y moving at audio rate), counted by CI on its branch merged with R1.10.",
+  "reason": "R1.7 adds unison's benchmarks: lspk-wavetable's 8 voices of 7 copies and 32 of 16, rendered and mixed to stereo, and lspk-voice's mix alone, each scalar and in SIMD (at AVX2, 19.5 instructions per voice-copy sample for 32 x 16 against 146 scalar; the mix alone 2.6). Their counts are from CI on the branch; every other count is main's, with R1.10's filter benchmarks. R1.19 adds the Extended filter group's benchmarks (twelve types, scalar and SIMD, and pole-zero-8-xy: all eight points active in every state, X-Y moving at audio rate), counted by CI on its branch merged with R1.10. R1.18 adds the oversampler's way down alone (decimate-2x, decimate-4x), counted by CI on its branch.",
   "simd": "avx2",
   "valgrind": "valgrind-3.22.0"
 }
