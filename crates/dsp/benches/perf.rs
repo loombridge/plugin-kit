@@ -206,10 +206,11 @@ fn main() -> ExitCode {
         }
     }
 
-    // Every filter type over a block of 16 mono voices, each with its cutoff
-    // swept at audio rate and its own resonance and drive: one voice at a
-    // time (scalar), and in SIMD lanes across voices. Items are voice
-    // samples, so the time per item is the cost of one voice's sample.
+    // Every filter type, in all four groups, over a block of 16 mono
+    // voices, each with its cutoff swept at audio rate and its own
+    // resonance, drive and character: one voice at a time (scalar), and in
+    // SIMD lanes across voices. Items are voice samples, so the time per
+    // item is the cost of one voice's sample.
     for kind in FilterType::ALL {
         for simd in [false, true] {
             let name = format!("filter/{kind}/{}", if simd { "simd" } else { "scalar" });
@@ -229,6 +230,7 @@ fn main() -> ExitCode {
                             resonance: 0.9 * x,
                             drive: 0.5 * x,
                             saturation: x,
+                            character: x,
                             ..VoiceParams::default()
                         },
                     );
