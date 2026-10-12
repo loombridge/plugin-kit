@@ -8,5 +8,20 @@ license = "MIT OR Apache-2.0"
 repository.workspace = true
 publish.workspace = true
 
+# RealtimeSanitizer has no feature and no dependency here. A harness builds
+# this crate with `--cfg lspk_rtsan` and links a runtime already installed on
+# the machine (see `src/sanitize.rs`).
+
+[dependencies]
+# The lock-free logger's per-thread queues.
+rtrb = "0.4.0"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.190"
+
+[target.'cfg(windows)'.dependencies]
+# MMCSS ("Pro Audio") for audio threads.
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 [lints]
 workspace = true
