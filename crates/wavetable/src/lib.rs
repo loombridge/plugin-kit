@@ -6,6 +6,7 @@
 //! | [`wav`] | WAV import and export, with the `clm ` chunk the wavetable community uses; plain WAVs split at a given frame size; 8 to 32-bit integer and 32 and 64-bit float input |
 //! | [`Table`] | The playable table, built off the audio thread: the morphed frames made at load, and every frame as band-limited mipmaps laid out for the cache. The audio thread only reads it |
 //! | [`Cache`] | The process-wide cache that shares one [`Table`] between every instance that loads it, never freed on the audio thread |
+//! | [`osc`] | The wavetable oscillator: every voice and unison copy in SIMD lanes, with frame position, Smooth frames, phase, random phase, the phase modes, audio-rate pitch and frame modulation, and mipmap levels that change without clicks |
 //!
 //! # Playing a table
 //!
@@ -33,12 +34,14 @@
 
 mod cache;
 mod model;
+pub mod osc;
 mod spectrum;
 mod table;
 pub mod wav;
 
 pub use cache::{Cache, SharedTable};
 pub use model::{Frame, Interpolation, Wavetable};
+pub use osc::Oscillator;
 pub use spectrum::FrameKind;
 pub use table::{CYCLE, GUARD, Level, MIN_LEVEL_SIZE, OVERSAMPLING, Table, Wave, increment};
 
