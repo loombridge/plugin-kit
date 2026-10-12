@@ -12,6 +12,10 @@ publish.workspace = true
 default = ["clap"]
 # The CLAP export (`export_clap!`), through clack.
 clap = ["dep:clack-plugin", "dep:clack-extensions"]
+# The VST3 export, made from the CLAP export by clap-wrapper.
+vst3 = ["clap", "dep:lspk-clap-wrapper", "lspk-clap-wrapper/vst3"]
+# The Audio Unit v2 export (macOS), made from the CLAP export by clap-wrapper.
+auv2 = ["clap", "dep:lspk-clap-wrapper", "lspk-clap-wrapper/auv2"]
 
 [dependencies]
 lspk-commands.workspace = true
@@ -33,6 +37,7 @@ clack-extensions = { version = "=0.2.0", optional = true, features = [
     "state",
     "tail",
 ] }
+lspk-clap-wrapper = { workspace = true, optional = true }
 
 [dev-dependencies]
 lspk-rt.workspace = true

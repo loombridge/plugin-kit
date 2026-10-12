@@ -20,7 +20,7 @@ The plan isn't published yet; a maintainer gives you the work package and the co
 - No allocation, lock or blocking call on an audio thread.
 - No kit crate depends on a plug-in or on Beatlayer. The DSP, voice, modulation, effects, wavetable, sequencing, presets, parameters, real-time and commands crates never depend on `lspk-ui` or reach a UI toolkit. `cargo xtask layers` enforces this.
 - Every feature has a headless test path.
-- No plug-in binaries, SDK binaries or third-party audio in the repository.
+- No plug-in binaries, SDK binaries or third-party audio in the repository. Third-party C and C++ sources the build needs are vendored, unchanged where possible, in a `vendor` folder, each component listed with its licence in `xtask/src/vendored.rs`; `cargo xtask vendored` checks them, as `cargo deny` checks crates. Nothing is downloaded at build time.
 - No `git add -A`.
 
 ## How work is done
