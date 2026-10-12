@@ -1,0 +1,269 @@
+{
+  "about": "Golden references: each render in this crate's golden suite stored as a 24-bit FLAC file. render_hash is an FNV-1a hash of the 32-bit float render the reference was made from. The tests null-test every render against its reference: bit-exact on the platform in made_on, below -96 dBFS elsewhere. Change references only with `cargo xtask golden --update`, and say why in the pull request.",
+  "references": {
+    "shaper-asymmetric": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:4ed606e87d8f7d17"
+    },
+    "shaper-diode-1": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:d98a21ae201aef25"
+    },
+    "shaper-diode-2": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:2293bcb0b3c33aa1"
+    },
+    "shaper-flip": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:873599283c5ce0c4"
+    },
+    "shaper-fold": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:d59e1d1349c9c005"
+    },
+    "shaper-hard-clip": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:67961e3c2fd662e1"
+    },
+    "shaper-high-pass": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:a21fedd2a04a5113"
+    },
+    "shaper-lean": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:c3d25a9a2e56744c"
+    },
+    "shaper-lean-left": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:280c77d28e9a607a"
+    },
+    "shaper-lean-right": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:1352ef8d427a1f32"
+    },
+    "shaper-low-pass": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:8a144f928d7d7c3c"
+    },
+    "shaper-mirror": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:5598d9b217b36a00"
+    },
+    "shaper-odd-even": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:1321dbeb1bc162ea"
+    },
+    "shaper-off": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:2d7d168b1e690965"
+    },
+    "shaper-pedal": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:14137f29785bd260"
+    },
+    "shaper-pinch": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:02dc3158843507ec"
+    },
+    "shaper-pinch-in": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:f868e0048053ae57"
+    },
+    "shaper-pinch-out": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:168b0c348e4ce79c"
+    },
+    "shaper-pulse-width": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:bd8d5b2f498a30fe"
+    },
+    "shaper-quantise": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:3b329e7eb71aad6e"
+    },
+    "shaper-rectify": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:bdbe7616eda3bc6d"
+    },
+    "shaper-remap-drawn": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:0ecadc0228698a62"
+    },
+    "shaper-remap-mirrored": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:0c99c2300cf2c72c"
+    },
+    "shaper-remap-sine": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:88d44e7c8bbbbc0e"
+    },
+    "shaper-remap-x4": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:0c99c2300cf2c72c"
+    },
+    "shaper-sine-fold": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:ffa65959c80e2b4d"
+    },
+    "shaper-sine-shaper": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:a6313529d14e82e3"
+    },
+    "shaper-soft-clip": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:2359cb8df438ffe6"
+    },
+    "shaper-soft-saturate": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:f97f7819dbc8280a"
+    },
+    "shaper-sync": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:5721256aee818082"
+    },
+    "shaper-tape": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:c608da855c36c9bc"
+    },
+    "shaper-valve": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:fbd70cf0f5e8e980"
+    },
+    "shaper-zero-square": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 3,
+      "frames": 1024,
+      "bits": 24,
+      "render_hash": "fnv1a64:92ef5f26c3ccaadd"
+    }
+  }
+}

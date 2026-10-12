@@ -7,6 +7,7 @@
 //! | [`Table`] | The playable table, built off the audio thread: the morphed frames made at load, and every frame as band-limited mipmaps laid out for the cache. The audio thread only reads it |
 //! | [`Cache`] | The process-wide cache that shares one [`Table`] between every instance that loads it, never freed on the audio thread |
 //! | [`osc`] | The wavetable oscillator: every voice and unison copy in SIMD lanes, with frame position, Smooth frames, phase, random phase, the phase modes, audio-rate pitch and frame modulation, and mipmap levels that change without clicks |
+//! | [`shaper`] | The oscillator's two shaper slots in series: sync, the pinches and leans, pulse width, flip, mirror, the remaps and their drawn curve, quantise, odd/even, the filters and fourteen distortions, band-limited and oversampled where they need it, with a preview of one shaped cycle |
 //!
 //! # Playing a table
 //!
@@ -35,6 +36,7 @@
 mod cache;
 mod model;
 pub mod osc;
+pub mod shaper;
 mod spectrum;
 mod table;
 pub mod wav;

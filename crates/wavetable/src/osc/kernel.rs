@@ -145,7 +145,8 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             } else {
                 (fixed, fixed)
             };
-            let (old, new, faded) = self.choose_levels::<S>(c, own, peak);
+            let looked = start..(start + len + SUB_BLOCK).min(n);
+            let (old, new, faded) = self.choose_levels::<S>(c, own, peak, looked);
             let stretch = Stretch {
                 c,
                 start,
@@ -187,6 +188,7 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
         c: usize,
         own: S::U32s,
         peak: S::U32s,
+        looked: std::ops::Range<usize>,
     ) -> (LaneLevels<S::U32s>, LaneLevels<S::U32s>, Option<S>) {
         let mut peaks = [0u32; 16];
         let mut owns = [0u32; 16];
@@ -197,8 +199,11 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
         let mut fade = false;
         let levels = self.levels;
         for (i, (&peak, &own)) in peaks.iter().zip(&owns).enumerate().take(S::LANES) {
+            // A stage that reads faster than the note picks the level for
+            // the speed it reads at.
+            let stretch = self.phase_stage.stretch(c + i, looked.clone());
             let lane = self.lanes.level_state(c + i);
-            levels.advance(lane, own, peak);
+            levels.advance(lane, stretched(own, stretch), stretched(peak, stretch));
             let (from, level) = (self.lanes.from[c + i], self.lanes.level[c + i]);
             fade |= from != level;
             for (arrays, level) in [(&mut old, from as usize), (&mut new, level as usize)] {
@@ -261,7 +266,7 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             } else {
                 s.fixed
             };
-            let read_at = self.phase_stage.shape::<S>(s.c, k, phase, increment);
+            let reads = self.phase_stage.reads::<S>(s.c, k, phase, increment);
             let frames = if FRAME_MOD {
                 let modulation = self
                     .inputs
@@ -271,14 +276,29 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             } else {
                 fixed_frames
             };
-            let mut value = read::<S, SMOOTH>(data, &s.new, &frames, read_at);
-            if FADE {
-                let before = read::<S, SMOOTH>(data, &s.old, &frames, read_at);
+            let toward = if FADE {
                 let played = s.faded + S::splat((k - s.start + 1) as f32);
-                let x = (played * per_frame).min(S::splat(1.0));
-                value = (value - before).mul_add(fade::<S>(x), before);
+                fade::<S>((played * per_frame).min(S::splat(1.0)))
+            } else {
+                S::splat(1.0)
+            };
+            let sample = |at: S::U32s| {
+                let value = read::<S, SMOOTH>(data, &s.new, &frames, at);
+                if FADE {
+                    let before = read::<S, SMOOTH>(data, &s.old, &frames, at);
+                    (value - before).mul_add(toward, before)
+                } else {
+                    value
+                }
+            };
+            let mut value = sample(reads.phase[0]);
+            if reads.count > 0 {
+                value *= reads.gain[0];
+                for i in 1..reads.count.min(super::MAX_READS) {
+                    value = sample(reads.phase[i]).mul_add(reads.gain[i], value);
+                }
             }
-            let value = self.wave_stage.shape::<S>(s.c, k, value) * gain;
+            let value = self.wave_stage.shape_at::<S>(s.c, k, increment, value) * gain;
             value.store(&mut self.out[k * stride + s.c..]);
             phase = phase.wrapping_add(increment);
         }
@@ -293,6 +313,16 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
 fn fade<S: F32s>(x: S) -> S {
     let c = S::splat;
     x * x * x * x.mul_add(x.mul_add(c(6.0), c(-15.0)), c(10.0))
+}
+
+/// `increment` times a stage's `stretch`, saturating.
+#[inline(always)]
+pub(super) fn stretched(increment: u32, stretch: f32) -> u32 {
+    if stretch == 1.0 {
+        increment
+    } else {
+        (increment as f32 * stretch.max(0.0)) as u32
+    }
 }
 
 /// What a stretch renders with.

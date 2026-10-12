@@ -1,6 +1,6 @@
 [package]
 name = "lspk-wavetable"
-description = "The wavetable model: WAV import and export with the `clm ` chunk, band-limited mipmaps, spectral morphing and a process-wide table cache."
+description = "The wavetable model: WAV import and export with the `clm ` chunk, band-limited mipmaps, spectral morphing, a process-wide table cache, the wavetable oscillator and its shapers."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

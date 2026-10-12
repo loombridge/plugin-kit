@@ -317,6 +317,14 @@ pub const ALIASING_FRAME: usize = 8_192;
 /// land on its own harmonics.
 #[must_use]
 pub fn aliasing(signal: &[f32], sample_rate: f64, pitch: Pitch) -> Aliasing {
+    aliasing_below(signal, sample_rate, pitch, sample_rate / 2.0)
+}
+
+/// [`aliasing`] counting only energy below `top` hertz: the aliasing in
+/// the audible band, for a process whose decimation filter lets what folds
+/// between `top` and Nyquist through, as an oversampled shaper's may.
+#[must_use]
+pub fn aliasing_below(signal: &[f32], sample_rate: f64, pitch: Pitch, top: f64) -> Aliasing {
     let frame = ALIASING_FRAME.min(signal.len());
     let mut result = Aliasing {
         harmonic: 0.0,
@@ -355,7 +363,7 @@ pub fn aliasing(signal: &[f32], sample_rate: f64, pitch: Pitch) -> Aliasing {
         let (low, high) = (low.min(high), low.max(high));
         for (k, value) in spectrum.iter().enumerate() {
             let f = k as f64 * bin;
-            if f < margin {
+            if f < margin || f >= top {
                 continue;
             }
             let energy = value.norm_sqr();

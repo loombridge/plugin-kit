@@ -150,7 +150,12 @@ pub(super) fn render<P: PhaseStage, W: WaveStage>(
             } else {
                 (fixed, fixed)
             };
-            levels.advance(lanes.level_state(l), own, peak);
+            let stretch = phase_stage.stretch(l, start..(start + len + SUB_BLOCK).min(n));
+            levels.advance(
+                lanes.level_state(l),
+                super::kernel::stretched(own, stretch),
+                super::kernel::stretched(peak, stretch),
+            );
             let (before, next) = (lanes.from[l] as usize, lanes.level[l] as usize);
             let faded = lanes.faded[l];
             // Without frame modulation, the frames hold for the stretch.
@@ -160,21 +165,33 @@ pub(super) fn render<P: PhaseStage, W: WaveStage>(
             let held_old = held.map(|at| Waves::new(table, before, at));
             for k in start..start + len {
                 let increment = if varying { lanes.increments[k] } else { fixed };
-                let read_at = phase_stage.shape_lane(l, k, phase, increment);
+                let reads = phase_stage.reads_lane(l, k, phase, increment);
                 let at = held.unwrap_or_else(|| {
                     let modulation = inputs.frame_mod.map_or(0.0, |m| m[k * stride + l]);
                     pick(&plan, frame_base + modulation)
                 });
                 let new = held_new.unwrap_or_else(|| Waves::new(table, next, at));
-                let mut value = new.read(plan.smooth, read_at);
-                if fade {
-                    let old = held_old.unwrap_or_else(|| Waves::new(table, before, at));
-                    let old = old.read(plan.smooth, read_at);
-                    let x = ((faded + (k - start + 1) as f32) / super::FADED).min(1.0);
-                    let toward = x * x * x * (x * (x * 6.0 - 15.0) + 10.0);
-                    value = old + (value - old) * toward;
+                let old = fade.then(|| held_old.unwrap_or_else(|| Waves::new(table, before, at)));
+                let x = ((faded + (k - start + 1) as f32) / super::FADED).min(1.0);
+                let toward = x * x * x * (x * (x * 6.0 - 15.0) + 10.0);
+                let sample = |read_at: u32| {
+                    let value = new.read(plan.smooth, read_at);
+                    match old {
+                        Some(old) => {
+                            let old = old.read(plan.smooth, read_at);
+                            old + (value - old) * toward
+                        }
+                        None => value,
+                    }
+                };
+                let mut value = sample(reads.phase[0]);
+                if reads.count > 0 {
+                    value *= reads.gain[0];
+                    for i in 1..reads.count.min(super::MAX_READS) {
+                        value += sample(reads.phase[i]) * reads.gain[i];
+                    }
                 }
-                out[k * stride + l] = wave_stage.shape_lane(l, k, value) * plan.gain;
+                out[k * stride + l] = wave_stage.shape_at_lane(l, k, increment, value) * plan.gain;
                 phase = phase.wrapping_add(increment);
             }
             if fade {
