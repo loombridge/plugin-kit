@@ -1,12 +1,29 @@
 [package]
 name = "lspk-wavetable"
-description = "The wavetable model: WAV import and export, mipmap building, spectral operations, resynthesis from audio and formula generation."
+description = "The wavetable model: WAV import and export with the `clm ` chunk, band-limited mipmaps, spectral morphing and a process-wide table cache."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 repository.workspace = true
 publish.workspace = true
+
+[dependencies]
+# The FFTs behind resampling, spectral morphing and the mipmaps, run off the
+# audio thread; pure Rust, as lspk-test's measurements use.
+realfft = "3.5.0"
+
+[dev-dependencies]
+# The allocation trap, for the audio-thread reads.
+lspk-rt.workspace = true
+# The aliasing measurement and the micro-benchmarks' suite format.
+lspk-test.workspace = true
+
+# Micro-benchmarks for the table load and the per-sample read, run by `cargo
+# xtask bench` (timing) and counted by its instruction-count gate.
+[[bench]]
+name = "perf"
+harness = false
 
 [lints]
 workspace = true
