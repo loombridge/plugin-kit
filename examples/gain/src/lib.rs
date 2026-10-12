@@ -84,7 +84,7 @@ impl GainProcessor {
             // Every channel follows the same glide.
             let mut gain = start;
             for sample in &mut audio.channel_mut(c)[from..to] {
-                *sample *= gain.step() as f32;
+                *sample = std::hint::black_box(*sample * gain.step() as f32);
             }
             self.gain = gain;
         }
