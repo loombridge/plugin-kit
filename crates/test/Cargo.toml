@@ -9,9 +9,16 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
-# Only for laying out CLAP files; the CLAP export itself isn't needed.
+# The in-process harness drives a plug-in through its traits; the CLAP export
+# isn't needed.
 lspk-plugin = { workspace = true, default-features = false }
+lspk-params.workspace = true
 lspk-rt.workspace = true
+# The plug-in's own parameter edits reach the processor through this queue, as
+# lspk-plugin's adapters take them.
+rtrb = "0.4.0"
+# The scripted MCP client for agent tests.
+lspk-agent.workspace = true
 # A CLAP host for tests, pinned exactly as lspk-plugin pins clack-plugin.
 clack-host = "=0.2.0"
 clack-extensions = { version = "=0.2.0", features = [
@@ -23,6 +30,21 @@ clack-extensions = { version = "=0.2.0", features = [
     "state",
     "tail",
 ] }
+# Spectra for the measurements; pure Rust, as Beatlayer's analysis uses.
+realfft = "3.5.0"
+# Golden references: written as 24-bit FLAC with flacenc and read back with
+# claxon, both pure Rust, as Beatlayer's golden tests do.
+flacenc = { version = "0.5.1", default-features = false }
+claxon = "0.4.3"
+# The golden manifest.
+serde = { version = "1.0.228", default-features = false, features = ["std", "derive"] }
+serde_json = "1"
+# Audio an agent tool returns, which comes as WAV.
+hound = "3.5.1"
+
+[dev-dependencies]
+lspk-commands.workspace = true
+schemars = { version = "=1.2.2", default-features = false, features = ["std", "derive"] }
 
 [lints]
 workspace = true
