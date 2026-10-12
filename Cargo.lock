@@ -1256,6 +1256,11 @@ version = "0.0.0"
 [[package]]
 name = "lspk-wavetable"
 version = "0.0.0"
+dependencies = [
+ "lspk-rt",
+ "lspk-test",
+ "realfft",
+]
 
 [[package]]
 name = "lspk-xtask"
