@@ -2,7 +2,8 @@
 //! stealing, mono, legato and paraphonic legato, portamento, the sustain
 //! pedal, pitch bend, MPE and CLAP's per-note expressions, with every
 //! voice's values in a structure-of-arrays [`VoiceBlock`] laid out as SIMD
-//! lanes. Unison stacks will come on top, as more lanes per voice.
+//! lanes. Unison stacks each voice's detuned copies as more lanes per
+//! voice ([`unison`]), and mixes them to a stereo pair per voice.
 //!
 //! An instrument owns a [`Voices`], hands it each block's events with
 //! [`Voices::process`], and implements [`VoiceHandler`]: the voices call it
@@ -52,10 +53,12 @@
 mod block;
 mod ramp;
 mod settings;
+pub mod unison;
 mod voices;
 
 pub use block::{Controllers, LANE_ALIGN, VoiceBlock, VoiceInfo, VoiceState};
 pub use settings::{Glide, MAX_VOICES, Mpe, SameNote, Settings, StealPriority};
+pub use unison::{DetuneLaw, Stack, Unison, UnisonLanes};
 pub use voices::{
     CONTROL_INTERVAL, Layout, Start, VoiceEvent, VoiceEventKind, VoiceHandler, Voices,
 };

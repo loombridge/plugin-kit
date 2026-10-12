@@ -1,6 +1,8 @@
 //! Micro-benchmarks for `lspk-wavetable`: loading a table (the WAV read,
 //! the morphed frames and the mipmaps), reading one per sample, and the
-//! oscillator rendering one voice and 32, scalar and across lanes in SIMD.
+//! oscillator rendering one voice and 32, scalar and across lanes in SIMD,
+//! and unison: 8 voices of 7 copies and 32 of 16, rendered and mixed to a
+//! stereo pair per voice, timed per voice-copy sample.
 //! `cargo xtask bench` times them, and CI's instruction-count gate covers
 //! them (at the AVX2 level).
 
@@ -9,6 +11,7 @@ use std::process::ExitCode;
 
 use lspk_dsp::simd;
 use lspk_test::bench::Suite;
+use lspk_voice::{Unison, UnisonLanes};
 use lspk_wavetable::osc::{Inputs, Layout, Onset, Oscillator};
 use lspk_wavetable::{Cache, Interpolation, MAX_FRAMES, Table, Wavetable, increment, wav};
 
@@ -85,7 +88,78 @@ fn main() -> ExitCode {
         }
     }
 
+    // Unison at the plan's reference block of 128 frames: every voice's
+    // copies rendered and mixed to stereo, scalar and in SIMD. Items are
+    // voice-copy samples, so the time per item is the CPU per voice-copy.
+    for (voices, copies) in [(8, 7), (32, 16)] {
+        for simd in [false, true] {
+            let id = format!(
+                "unison/{voices}x{copies}/{}",
+                if simd { "simd" } else { "scalar" }
+            );
+            suite.micro(&id, UNISON_BLOCK * voices * copies, move || {
+                unison(voices, copies, simd)
+            });
+        }
+    }
+
     suite.main()
+}
+
+/// The block unison is benchmarked at: the plan's reference, 128 frames.
+const UNISON_BLOCK: usize = 128;
+
+/// `voices` voices of `copies` unison copies on a 16-frame table, with a
+/// frame spread, and a routine rendering and mixing a block of them.
+fn unison(voices: usize, copies: usize, simd: bool) -> impl FnMut() {
+    let table = Cache::global()
+        .share(wav::read(&wav_bytes(16, Interpolation::None), None).expect("a valid file"));
+    let mut osc = Oscillator::new(
+        table,
+        Layout {
+            voices,
+            lanes_per_voice: copies,
+        },
+        48_000.0,
+        UNISON_BLOCK,
+        1,
+    );
+    osc.params_mut().frame = 8.0;
+    let mut lanes = UnisonLanes::new(voices, copies, 1);
+    lanes.set(Unison {
+        copies,
+        detune: 0.3,
+        frame_spread: 20.0,
+        ..Unison::default()
+    });
+    let keys: Vec<f32> = (0..voices).map(|v| 36.0 + v as f32 * 1.5).collect();
+    let mut pitch = vec![0.0; osc.lane_count()];
+    for (voice, &key) in keys.iter().enumerate() {
+        lanes.start(voice);
+        let range = lanes.lanes_of(voice);
+        osc.set_unison(range.clone(), lanes.pitch(), lanes.frame());
+        osc.start(voice, key, Onset::Fresh);
+        pitch[range].fill(key);
+    }
+    let mut out = vec![0.0f32; UNISON_BLOCK * osc.lane_count()];
+    let mut mix = vec![0.0f32; UNISON_BLOCK * 2 * lanes.voice_stride()];
+    let level = simd::level();
+    move || {
+        let inputs = Inputs {
+            lanes: voices * copies,
+            pitch: &pitch,
+            ..Inputs::default()
+        };
+        mix.fill(0.0);
+        if simd {
+            osc.process_at(level, UNISON_BLOCK, &inputs, &mut out);
+            lanes.mix_at(level, UNISON_BLOCK, voices, &out, &mut mix);
+        } else {
+            osc.process_scalar(UNISON_BLOCK, &inputs, &mut out);
+            lanes.mix_scalar(UNISON_BLOCK, voices, &out, &mut mix);
+        }
+        black_box(&mix);
+    }
 }
 
 /// An oscillator of `voices` voices on a 16-frame table, and a routine

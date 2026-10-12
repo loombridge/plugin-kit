@@ -1,5 +1,6 @@
 //! Micro-benchmarks for `lspk-voice`'s hot paths: allocation under heavy
-//! note traffic, and the per-block cost of the voice loop. `cargo xtask
+//! note traffic, the per-block cost of the voice loop, and the unison mix
+//! of every voice's copies to stereo. `cargo xtask
 //! bench` times them, and CI's instruction-count gate covers them.
 
 use std::f32::consts::TAU;
@@ -11,7 +12,8 @@ use lspk_dsp::simd::{self, F32s, Kernel};
 use lspk_plugin::{Event, Note};
 use lspk_test::bench::Suite;
 use lspk_voice::{
-    Glide, Layout, Settings, Start, VoiceBlock, VoiceEvent, VoiceEventKind, VoiceHandler, Voices,
+    Glide, Layout, Settings, Start, Unison, UnisonLanes, VoiceBlock, VoiceEvent, VoiceEventKind,
+    VoiceHandler, Voices,
 };
 
 /// Frames in a block, as hosts commonly use.
@@ -228,5 +230,43 @@ fn main() -> ExitCode {
         }
     });
 
+    // The unison mix alone, 128 frames of every voice's copies to a stereo
+    // pair per voice, scalar and in SIMD: 8 voices of 7 copies (voices
+    // straddling vectors) and 32 of 16 (whole vectors per voice). Items
+    // are voice-copy samples.
+    for (voices, copies) in [(8, 7), (32, 16)] {
+        for simd in [false, true] {
+            let id = format!(
+                "unison-mix/{voices}x{copies}/{}",
+                if simd { "simd" } else { "scalar" }
+            );
+            suite.micro(&id, MIX_BLOCK * voices * copies, move || {
+                let mut lanes = UnisonLanes::new(voices, copies, 1);
+                lanes.set(Unison {
+                    copies,
+                    blend: 60.0,
+                    ..Unison::default()
+                });
+                let input: Vec<f32> = (0..MIX_BLOCK * lanes.lane_count())
+                    .map(|i| (i as f32 * 0.37).sin())
+                    .collect();
+                let mut out = vec![0.0f32; MIX_BLOCK * 2 * lanes.voice_stride()];
+                let level = simd::level();
+                move || {
+                    if simd {
+                        lanes.mix_at(level, MIX_BLOCK, voices, &input, &mut out);
+                    } else {
+                        lanes.mix_scalar(MIX_BLOCK, voices, &input, &mut out);
+                    }
+                    black_box(&out);
+                }
+            });
+        }
+    }
+
     suite.main()
 }
+
+/// The block the unison mix is benchmarked at: the plan's reference, 128
+/// frames.
+const MIX_BLOCK: usize = 128;
