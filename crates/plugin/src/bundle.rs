@@ -11,6 +11,9 @@
 //! - **Audio Unit v2** (macOS): a `.component` bundle whose `Info.plist`
 //!   lists the Audio Unit's type, subtype and manufacturer codes
 //!   ([`AuCodes`]) and its factory function.
+//! - **The standalone app** (`lspk-standalone`), from the plug-in crate's
+//!   own executable rather than its library: an `.app` bundle on macOS,
+//!   elsewhere the executable itself ([`write_app`]).
 //!
 //! Signing is left to the caller (`cargo xtask bundle` signs macOS bundles
 //! ad hoc, so hosts and `auval` load them).
@@ -130,7 +133,7 @@ pub fn write_clap(library: &Path, dir: &Path, name: &str, id: &str) -> io::Resul
             id: id.to_owned(),
             ..BundleInfo::default()
         };
-        write_mac_bundle(library, &clap, name, &info, "")?;
+        write_mac_bundle(library, &clap, name, &info, "", Package::Bundle)?;
     } else {
         std::fs::copy(library, &clap)?;
     }
@@ -153,7 +156,7 @@ pub fn write_vst3(
     remove(&vst3)?;
     std::fs::create_dir_all(dir)?;
     if cfg!(target_os = "macos") {
-        write_mac_bundle(library, &vst3, name, info, "")?;
+        write_mac_bundle(library, &vst3, name, info, "", Package::Bundle)?;
     } else {
         let arch = match std::env::consts::ARCH {
             "aarch64" => "aarch64",
@@ -222,8 +225,72 @@ pub fn write_auv2(
         name = escape(&info.name),
         version = au_version(&info.version),
     );
-    write_mac_bundle(library, &component, name, info, &entry)?;
+    write_mac_bundle(library, &component, name, info, &entry, Package::Bundle)?;
     Ok(component)
+}
+
+/// Writes `executable` (a plug-in crate's standalone app, built from its
+/// `<crate>-standalone` binary) into `dir` as the app `<name>`, replacing
+/// any older one, and returns its path: on macOS the bundle `<name>.app`,
+/// identified as the plug-in's ID followed by `.standalone`, named for the
+/// plug-in, and saying why it asks for the microphone (an effect's input);
+/// elsewhere the executable itself, as `<name>.exe` on Windows and `<name>`
+/// on Linux.
+///
+/// # Errors
+///
+/// A file that couldn't be read or written.
+pub fn write_app(
+    executable: &Path,
+    dir: &Path,
+    name: &str,
+    info: &BundleInfo,
+) -> io::Result<PathBuf> {
+    std::fs::create_dir_all(dir)?;
+    if !cfg!(target_os = "macos") {
+        let app = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+        remove(&app)?;
+        std::fs::copy(executable, &app)?;
+        return Ok(app);
+    }
+    let app = dir.join(format!("{name}.app"));
+    remove(&app)?;
+    let shown = if info.name.is_empty() {
+        name
+    } else {
+        &info.name
+    };
+    let extra = format!(
+        "\t<key>CFBundleDisplayName</key><string>{shown}</string>\n\
+         \t<key>NSHighResolutionCapable</key><true/>\n\
+         \t<key>NSMicrophoneUsageDescription</key>\
+         <string>{shown} processes the audio input.</string>\n",
+        shown = escape(shown),
+    );
+    let info = BundleInfo {
+        id: format!("{}.standalone", info.id),
+        ..info.clone()
+    };
+    write_mac_bundle(executable, &app, name, &info, &extra, Package::App)?;
+    Ok(app)
+}
+
+/// What kind of macOS bundle a bundle is.
+#[derive(Clone, Copy)]
+enum Package {
+    /// A loadable bundle: a plug-in.
+    Bundle,
+    /// An application.
+    App,
+}
+
+impl Package {
+    fn code(self) -> &'static str {
+        match self {
+            Self::Bundle => "BNDL",
+            Self::App => "APPL",
+        }
+    }
 }
 
 /// Writes a macOS bundle at `bundle`: `library` as its executable `name`,
@@ -234,13 +301,17 @@ fn write_mac_bundle(
     name: &str,
     info: &BundleInfo,
     extra: &str,
+    package: Package,
 ) -> io::Result<()> {
     let contents = bundle.join("Contents");
     let binaries = contents.join("MacOS");
     std::fs::create_dir_all(&binaries)?;
     std::fs::copy(library, binaries.join(name))?;
-    std::fs::write(contents.join("Info.plist"), info_plist(name, info, extra))?;
-    std::fs::write(contents.join("PkgInfo"), "BNDL????")?;
+    std::fs::write(
+        contents.join("Info.plist"),
+        info_plist(name, info, extra, package),
+    )?;
+    std::fs::write(contents.join("PkgInfo"), format!("{}????", package.code()))?;
     Ok(())
 }
 
@@ -256,7 +327,7 @@ fn remove(path: &Path) -> io::Result<()> {
 }
 
 /// A bundle's `Info.plist` naming its executable `name`, with `extra` keys.
-fn info_plist(name: &str, info: &BundleInfo, extra: &str) -> String {
+fn info_plist(name: &str, info: &BundleInfo, extra: &str, package: Package) -> String {
     let version = if info.version.is_empty() {
         "0.0.0"
     } else {
@@ -271,7 +342,7 @@ fn info_plist(name: &str, info: &BundleInfo, extra: &str) -> String {
 	<key>CFBundleExecutable</key><string>{name}</string>
 	<key>CFBundleIdentifier</key><string>{id}</string>
 	<key>CFBundleName</key><string>{name}</string>
-	<key>CFBundlePackageType</key><string>BNDL</string>
+	<key>CFBundlePackageType</key><string>{package}</string>
 	<key>CFBundleShortVersionString</key><string>{version}</string>
 	<key>CFBundleVersion</key><string>{version}</string>
 	<key>CFBundleSignature</key><string>????</string>
@@ -281,6 +352,7 @@ fn info_plist(name: &str, info: &BundleInfo, extra: &str) -> String {
         name = escape(name),
         id = escape(&info.id),
         version = escape(version),
+        package = package.code(),
     )
 }
 
@@ -412,6 +484,39 @@ mod tests {
             std::fs::read(component.join("Contents/MacOS/Test")).expect("the library"),
             b"library"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_executable_becomes_an_app() {
+        let (dir, executable) = scratch("app");
+        let out = dir.join("out");
+        write_app(&executable, &out, "Test", &info(&["instrument"])).expect("an app");
+        let app = write_app(&executable, &out, "Test", &info(&["instrument"])).expect("an app");
+        let binary = if cfg!(target_os = "macos") {
+            assert_eq!(app, out.join("Test.app"));
+            let plist = std::fs::read_to_string(app.join("Contents/Info.plist")).expect("a plist");
+            for expected in [
+                "<key>CFBundlePackageType</key><string>APPL</string>",
+                "<string>com.example.test.standalone</string>",
+                "<key>CFBundleDisplayName</key><string>Test</string>",
+                "NSMicrophoneUsageDescription",
+            ] {
+                assert!(plist.contains(expected), "no {expected} in\n{plist}");
+            }
+            assert_eq!(
+                std::fs::read_to_string(app.join("Contents/PkgInfo")).expect("PkgInfo"),
+                "APPL????"
+            );
+            app.join("Contents/MacOS/Test")
+        } else {
+            assert_eq!(
+                app,
+                out.join(format!("Test{}", std::env::consts::EXE_SUFFIX))
+            );
+            app
+        };
+        assert_eq!(std::fs::read(binary).expect("the executable"), b"library");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

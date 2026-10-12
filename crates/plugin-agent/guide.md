@@ -25,7 +25,17 @@ To change parameters, run `params.set`:
   { "param": 2, "value": 0.5 } ] } } ] }
 ```
 
-Name a parameter by its ID or its name. Give each new value as `value` (a number in its own units) or `text` (as the host would show it). Values outside the range are clamped.
+Name a parameter by its ID, its name or its path. Give each new value as `value` (a number in its own units) or `text` (as the host would show it). Values outside the range are clamped.
+
+## Modules and slots
+
+A plug-in made of modules names each parameter by its module: `Osc A Level`, with the path `osc "A" / param "Level"`. Some modules are slots, such as an effects rack's: the slot's `Type` parameter chooses which module it holds, and its other parameters are that module's, with their real names and ranges. When the type changes, the slot's parameters become the new module's, at its defaults. In one `params.set`, values apply in order, so set the type first and then the new module's parameters:
+
+```json
+{ "values": [
+  { "param": "fx \"1\" / param \"Type\"", "text": "Delay" },
+  { "param": "fx \"1\" / param \"Time\"", "text": "250 ms" } ] }
+```
 
 ## The host stays in step
 

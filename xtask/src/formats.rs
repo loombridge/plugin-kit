@@ -20,7 +20,10 @@ pub struct Bundled {
 
 /// Builds each plug-in crate in `packages` in release, and writes its
 /// bundles to `target/bundle`: `<crate>.clap`, `<crate>.vst3` and, on
-/// macOS, `<crate>.component`, each signed ad hoc on macOS.
+/// macOS, `<crate>.component`, each signed ad hoc on macOS; and, for a
+/// crate with a `<crate>-standalone` binary (`lspk-standalone`), the
+/// standalone app: `<crate>.app` on macOS, `<crate>.exe` on Windows and
+/// `<crate>` on Linux.
 pub fn bundle(root: &Path, packages: &[String]) -> Result<Vec<Bundled>, String> {
     if packages.is_empty() {
         return Err(format!(
@@ -64,7 +67,19 @@ pub fn bundle(root: &Path, packages: &[String]) -> Result<Vec<Bundled>, String> 
         } else {
             None
         };
-        for path in [Some(&clap), Some(&vst3), auv2.as_ref()]
+        let executable = target.join("release").join(format!(
+            "{package}-standalone{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        let app = if executable.exists() {
+            Some(
+                bundle::write_app(&executable, &dir, package, &info)
+                    .map_err(|e| written("standalone app", e))?,
+            )
+        } else {
+            None
+        };
+        for path in [Some(&clap), Some(&vst3), auv2.as_ref(), app.as_ref()]
             .into_iter()
             .flatten()
         {

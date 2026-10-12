@@ -406,7 +406,7 @@ impl<P: Plugin> Instance<P> {
         let requests = Rc::new(Recorder::default());
         let host = Host::new(Box::new(Backend(requests.clone())));
         let plugin = P::new(host.clone());
-        let values = Arc::new(ParamValues::new(plugin.params()).map_err(|e| e.to_string())?);
+        let values = Arc::new(ParamValues::for_plugin(&plugin).map_err(|e| e.to_string())?);
         let edits = host.connect(values.clone());
         Ok(Self {
             active: None,
@@ -444,6 +444,14 @@ impl<P: Plugin> Instance<P> {
     /// What the plug-in has asked of the host since the last call.
     pub fn take_requests(&mut self) -> Requests {
         self.requests.take()
+    }
+
+    /// Calls the plug-in back on the main thread, as a host does after it
+    /// asks: first bringing its parameter space's slots up to date after
+    /// the script's changes ([`Host::sync_slots`]).
+    pub fn on_main_thread(&mut self) {
+        self.host.sync_slots();
+        self.plugin.on_main_thread();
     }
 
     /// Its state as a format saves it: every parameter's value, then the

@@ -25,8 +25,9 @@ use vst3::Steinberg::Vst::{
     IComponentHandlerTrait, IComponentTrait, IEditController, IEditControllerTrait, IEventList,
     IEventListTrait, IHostApplication, IHostApplicationTrait, IParamValueQueue,
     IParamValueQueueTrait, IParameterChanges, IParameterChangesTrait, MediaTypes_::kAudio,
-    MediaTypes_::kEvent, NoteOnEvent, ParamID, ParamValue, ParameterInfo, ProcessData,
-    ProcessModes_::kRealtime, ProcessSetup, String128, SymbolicSampleSizes_::kSample32, TChar,
+    MediaTypes_::kEvent, NoteOnEvent, ParamID, ParamValue, ParameterInfo, ParameterInfo_,
+    ProcessData, ProcessModes_::kRealtime, ProcessSetup, String128,
+    SymbolicSampleSizes_::kSample32, TChar,
 };
 use vst3::Steinberg::{
     FIDString, IBStream, IBStreamTrait, IPluginBase, IPluginBaseTrait, IPluginFactory,
@@ -61,6 +62,10 @@ pub struct Vst3Param {
     pub steps: i32,
     /// Its default, normalised.
     pub default: f64,
+    /// Whether the host should hide it (`kIsHidden`).
+    pub hidden: bool,
+    /// Whether automation can move it (`kCanAutomate`).
+    pub automatable: bool,
 }
 
 /// One block's results.
@@ -201,6 +206,9 @@ impl Vst3TestHost {
                             title: utf16_text(&info.title),
                             steps: info.stepCount,
                             default: info.defaultNormalizedValue,
+                            hidden: info.flags & ParameterInfo_::ParameterFlags_::kIsHidden != 0,
+                            automatable: info.flags & ParameterInfo_::ParameterFlags_::kCanAutomate
+                                != 0,
                         }
                     })
                 })
@@ -213,6 +221,18 @@ impl Vst3TestHost {
     pub fn value(&self, id: u32) -> f64 {
         // SAFETY: the controller's own call.
         unsafe { self.controller.getParamNormalized(id) }
+    }
+
+    /// How the controller shows parameter `id` at the normalised value
+    /// `value`.
+    #[must_use]
+    pub fn text(&self, id: u32, value: f64) -> Option<String> {
+        // SAFETY: the controller's own call, with a buffer of its size.
+        unsafe {
+            let mut text: String128 = std::mem::zeroed();
+            (self.controller.getParamStringByValue(id, value, &mut text) == kResultOk)
+                .then(|| utf16_text(&text))
+        }
     }
 
     /// Activates the instance and starts processing, at `sample_rate` in
