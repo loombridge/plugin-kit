@@ -1,11 +1,11 @@
 {
   "about": "Instructions each benchmark's measured region runs, counted by Callgrind on x86-64 Linux at the AVX2 SIMD level. CI fails a pull request that makes any of them more than 3 % higher; change them only with `cargo xtask bench --update-baseline --reason ...`, and say why in the pull request.",
   "instructions": {
-    "lspk-dsp/envelope/idle-32": 11281,
+    "lspk-dsp/envelope/idle-32": 11272,
     "lspk-dsp/envelope/one": 3534,
-    "lspk-dsp/envelope/scalar-32": 120665,
-    "lspk-dsp/envelope/simd-32": 28383,
-    "lspk-dsp/envelope/sustain-32": 11281,
+    "lspk-dsp/envelope/scalar-32": 120781,
+    "lspk-dsp/envelope/simd-32": 28481,
+    "lspk-dsp/envelope/sustain-32": 11272,
     "lspk-dsp/filter/ladder-12/scalar": 1593254,
     "lspk-dsp/filter/ladder-12/simd": 220074,
     "lspk-dsp/filter/ladder-18/scalar": 1593254,
@@ -42,6 +42,12 @@
     "lspk-dsp/filter/svf-peak12/simd": 194450,
     "lspk-dsp/filter/svf-peak24/scalar": 1584981,
     "lspk-dsp/filter/svf-peak24/simd": 214931,
+    "lspk-dsp/lfo/drawn/scalar": 2301784,
+    "lspk-dsp/lfo/drawn/simd": 1789936,
+    "lspk-dsp/lfo/lorenz/scalar": 3364716,
+    "lspk-dsp/lfo/lorenz/simd": 1807344,
+    "lspk-dsp/lfo/path/scalar": 2692930,
+    "lspk-dsp/lfo/path/simd": 1835910,
     "lspk-dsp/oversampler/2x": 502192,
     "lspk-dsp/oversampler/4x": 1503243,
     "lspk-dsp/oversampler/8x": 3505254,
@@ -65,7 +71,7 @@
     "lspk-example-sine/one-voice/process": 7578149
   },
   "platform": "x86_64-linux",
-  "reason": "R1.9 adds 36 lspk-dsp filter micro-benchmarks (every filter type, scalar and SIMD). simd/mix moves from 352 to 363 instructions (+11) only because the bench binary's code changed around it; its kernel is unchanged. Counts from CI run 38278716145, on main with R1.11's envelopes.",
+  "reason": "R1.9 adds 36 lspk-dsp filter micro-benchmarks (every filter type, scalar and SIMD), counted by CI. simd/mix moves from 352 to 363 instructions (+11) only because the bench binary's code changed around it; its kernel is unchanged. Merged with R1.12's LFO benchmarks; every other count is main's.",
   "simd": "avx2",
   "valgrind": "valgrind-3.22.0"
 }

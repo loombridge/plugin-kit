@@ -6,6 +6,7 @@ use std::hint::black_box;
 use std::process::ExitCode;
 
 use lspk_dsp::envelope::{Timing, Trigger};
+use lspk_dsp::lfo::{Lfo, LfoBank, LfoType, Point, Rate, Settings, Transport};
 use lspk_dsp::{
     Envelope, EnvelopeBank, EnvelopeParams, FilterBank, FilterType, LinearSmoother, Oversampler,
     VoiceParams, simd,
@@ -177,6 +178,34 @@ fn main() -> ExitCode {
         }
     });
 
+    // Ten LFO slots for 32 voices is a full patch; one slot's block for 32
+    // voices, per voice-sample, for the drawn, path and chaos types, one
+    // voice at a time (scalar) and across voices in SIMD lanes.
+    for (kind, name) in [
+        (LfoType::Drawn, "drawn"),
+        (LfoType::Path, "path"),
+        (LfoType::Lorenz, "lorenz"),
+    ] {
+        for simd_path in [false, true] {
+            let id = format!("lfo/{name}/{}", if simd_path { "simd" } else { "scalar" });
+            suite.micro(&id, BLOCK * LFO_VOICES, move || {
+                let mut bank = lfo_bank(kind);
+                let transport = Transport::new(48_000.0);
+                let mut out = vec![0.0; BLOCK * LFO_VOICES];
+                let mut out_y = out.clone();
+                move || {
+                    if simd_path {
+                        let level = simd::level();
+                        bank.process_at(level, &transport, BLOCK, &mut out, Some(&mut out_y));
+                    } else {
+                        bank.process_scalar(&transport, BLOCK, &mut out, Some(&mut out_y));
+                    }
+                    black_box((&out, &out_y));
+                }
+            });
+        }
+    }
+
     // Every filter type over a block of 16 mono voices, each with its cutoff
     // swept at audio rate and its own resonance and drive: one voice at a
     // time (scalar), and in SIMD lanes across voices. Items are voice
@@ -219,4 +248,32 @@ fn main() -> ExitCode {
     }
 
     suite.main()
+}
+
+/// Voices in the LFO benchmarks.
+const LFO_VOICES: usize = 32;
+
+/// An LFO slot of `kind` for 32 voices at 5 Hz, each voice started at a
+/// different time, the drawn shape eight curved points.
+fn lfo_bank(kind: LfoType) -> LfoBank {
+    let settings = Settings {
+        kind,
+        rate: Rate::Hz {
+            hz: 5.0,
+            x10: false,
+        },
+        ..Settings::default()
+    };
+    let mut lfo = Lfo::new(settings, 1);
+    let points: Vec<Point> = (0..8)
+        .map(|i| Point::new(i as f32 / 7.0, if i % 2 == 0 { 0.1 } else { 0.9 }).curve(0.3))
+        .collect();
+    lfo.shape_mut().set_points(&points);
+    let mut bank = LfoBank::new(lfo, LFO_VOICES);
+    for v in 0..LFO_VOICES {
+        bank.trigger(v, v * 11);
+    }
+    let mut out = vec![0.0; BLOCK * LFO_VOICES];
+    bank.process(&Transport::new(48_000.0), BLOCK, &mut out, None);
+    bank
 }
