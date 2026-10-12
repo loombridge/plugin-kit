@@ -1,5 +1,6 @@
 //! Repository tasks for the plug-in kit. Run `cargo xtask help` for the list.
 
+mod harness;
 mod private_terms;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -21,6 +22,14 @@ Tasks:
   bundle <crate>...
                  Build each plug-in crate in release and lay it out as a CLAP file in
                  target/bundle (for clap-validator and hosts)
+  golden [--update] [NAME...]
+                 Run every crate's golden suite (tests/golden.rs) against its references.
+                 With --update, first remake the references whose renders changed (or
+                 only those named), recording this platform as the one that made them;
+                 say why in the pull request
+  validate [<crate>...]
+                 Bundle the plug-in crates (the examples if none are named) and run each
+                 format's validators on them (clap-validator)
   help           Show this message
 ";
 
@@ -80,8 +89,11 @@ fn main() -> ExitCode {
 
 fn run(root: &Path, args: &[String]) -> Result<(), String> {
     let task = args.first().map(String::as_str);
-    if task == Some("bundle") {
-        return bundle(root, &args[1..]);
+    match task {
+        Some("bundle") => return bundle(root, &args[1..]),
+        Some("golden") => return harness::golden(root, &args[1..]),
+        Some("validate") => return harness::validate(root, &args[1..]),
+        _ => {}
     }
     if let Some(extra) = args.get(1) {
         return Err(format!("unexpected `{extra}`\n\n{USAGE}"));

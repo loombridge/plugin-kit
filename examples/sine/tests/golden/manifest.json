@@ -1,0 +1,13 @@
+{
+  "about": "Golden references: each render in this crate's golden suite stored as a 24-bit FLAC file. render_hash is an FNV-1a hash of the 32-bit float render the reference was made from. The tests null-test every render against its reference: bit-exact on the platform in made_on, below -96 dBFS elsewhere. Change references only with `cargo xtask golden --update`, and say why in the pull request.",
+  "references": {
+    "phrase": {
+      "made_on": "macos-aarch64",
+      "sample_rate": 48000,
+      "channels": 2,
+      "frames": 72000,
+      "bits": 24,
+      "render_hash": "fnv1a64:0eff3d91b4cde749"
+    }
+  }
+}

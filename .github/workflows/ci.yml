@@ -7,7 +7,10 @@
 # - cancels a run when a newer commit supersedes it;
 # - restores the dependency cache on every run, but saves it only from main,
 #   so pull requests share main's cache instead of filling the quota;
-# - times out a hung job after 30 minutes rather than the default six hours.
+# - times out a hung job after 30 minutes rather than the default six hours;
+# - runs the format validators on the example plug-ins (`cargo xtask
+#   validate`), with clap-validator built from source at a pinned revision and
+#   cached per platform, so it's compiled once until the pin changes.
 #
 # A failure on one platform doesn't cancel the others (fail-fast is off), so
 # one run reports every platform's failures.
@@ -36,6 +39,9 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   RUST_BACKTRACE: 1
+  # clap-validator's revision (free-audio/clap-validator, after 0.4.1). Change
+  # it here only; the cache key follows it.
+  CLAP_VALIDATOR_REV: b2f1d9b79b1d264a5747f46707d72b1aa40a02ef
 
 jobs:
   check:
@@ -89,7 +95,32 @@ jobs:
           # A prebuilt, checksummed binary or nothing: never compile it here.
           fallback: none
 
+      - name: Restore clap-validator
+        id: clap-validator
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.clap-validator
+          key: clap-validator-${{ runner.os }}-${{ runner.arch }}-${{ env.CLAP_VALIDATOR_REV }}
+
+      - name: Install clap-validator
+        if: steps.clap-validator.outputs.cache-hit != 'true'
+        run: >-
+          cargo install --locked
+          --git https://github.com/free-audio/clap-validator
+          --rev "$CLAP_VALIDATOR_REV"
+          --root "$HOME/.clap-validator"
+          clap-validator
+
       - name: cargo xtask check
         env:
           NEXTEST_PROFILE: ci
         run: cargo xtask check
+
+      # The VST3 and Audio Unit exports add their validators' installs above
+      # (the Steinberg validator, pluginval, auval on macOS), and `cargo xtask
+      # validate` runs them with clap-validator.
+      - name: cargo xtask validate
+        if: ${{ !cancelled() }}
+        run: |
+          export PATH="$HOME/.clap-validator/bin:$PATH"
+          cargo xtask validate
