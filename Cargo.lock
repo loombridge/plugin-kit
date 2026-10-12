@@ -1302,6 +1302,8 @@ dependencies = [
  "lspk-params",
  "lspk-rt",
  "lspk-test",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -837,9 +837,11 @@ fn shriek_comes_in_above_half_drive() {
 // types with none ignore it.
 #[test]
 fn character_moves_the_types_that_have_one_and_no_others() {
+    // The pole-zero filter's default design is flat, so its Smooth has
+    // nothing to move; filter_extended.rs tests it with points.
     for kind in FilterType::ALL
         .into_iter()
-        .filter(|k| k.group() != FilterGroup::Normal)
+        .filter(|&k| k.group() != FilterGroup::Normal && k != FilterType::PoleZero)
     {
         let input = signal::noise(8, 4_096, 0.3);
         let pitch: Vec<f32> = (0..4_096)
@@ -863,7 +865,7 @@ fn character_moves_the_types_that_have_one_and_no_others() {
             assert_eq!(a, b, "{kind}");
         }
     }
-    assert_eq!(FilterType::ALL.len(), 96);
+    assert_eq!(FilterType::ALL.len(), 108);
     assert_eq!(FilterType::Lp12.character(), Some("resonance saturation"));
     assert!(hertz_of(69.0, 440.0) == 440.0);
 }
