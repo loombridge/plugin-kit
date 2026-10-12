@@ -85,7 +85,7 @@ use crate::audio::{Buffers, MAX_CHANNELS};
 use crate::editor::{
     Editor, EditorChanges, EditorContext, EditorHost, EditorSize, ParentWindow, WindowApi,
 };
-use crate::events::{Event, EventSource, Events, Note};
+use crate::events::{Event, EventSource, Events, Expression, Note};
 use crate::host::{Edit, EventSink, Host, HostBackend, OutputEvent, ProcessContext, Waker};
 use crate::params::ParamValues;
 use crate::{Plugin, ProcessConfig, ProcessStatus, Processor, Tail, state};
@@ -899,6 +899,14 @@ impl EventSource for ClapEvents<'_> {
                     value: from_host(descriptor, e.value()),
                 }
             }
+            CoreEventSpace::NoteExpression(e) => Event::NoteExpression {
+                time,
+                note: note(e.pckn())?,
+                // Read from the raw ID: clack 0.2.0's `expression_type` has
+                // no entry for CLAP's "expression".
+                expression: expression(e.as_raw().expression_id)?,
+                value: e.value(),
+            },
             CoreEventSpace::Midi(e) => midi(time, e.port_index(), e.data())?,
             _ => return None,
         })
@@ -927,16 +935,30 @@ fn note(pckn: Pckn) -> Option<Note> {
     })
 }
 
-/// A MIDI 1.0 note-on or note-off as the kit's event; other messages are
-/// passed over.
-fn midi(time: u32, port: u16, [status, key, velocity]: [u8; 3]) -> Option<Event> {
+/// CLAP's note expression `id` as the kit's, if it's one CLAP defines.
+fn expression(id: i32) -> Option<Expression> {
+    Some(match id {
+        0 => Expression::Volume,
+        1 => Expression::Pan,
+        2 => Expression::Tuning,
+        3 => Expression::Vibrato,
+        4 => Expression::Expression,
+        5 => Expression::Brightness,
+        6 => Expression::Pressure,
+        _ => return None,
+    })
+}
+
+/// A MIDI 1.0 message as the kit's event: notes as note events, the other
+/// channel messages as [`Event::Midi`]; system messages are passed over.
+fn midi(time: u32, port: u16, [status, key, velocity_byte]: [u8; 3]) -> Option<Event> {
     let note = Note {
         port: Some(port),
         channel: Some(status & 0x0f),
         key: Some(key & 0x7f),
         id: None,
     };
-    let velocity = f32::from(velocity & 0x7f) / 127.0;
+    let velocity = f32::from(velocity_byte & 0x7f) / 127.0;
     match status & 0xf0 {
         0x90 if velocity > 0.0 => Some(Event::NoteOn {
             time,
@@ -947,6 +969,11 @@ fn midi(time: u32, port: u16, [status, key, velocity]: [u8; 3]) -> Option<Event>
             time,
             note,
             velocity,
+        }),
+        0xa0..=0xe0 => Some(Event::Midi {
+            time,
+            port,
+            data: [status, key & 0x7f, velocity_byte & 0x7f],
         }),
         _ => None,
     }
@@ -1200,7 +1227,7 @@ impl<P: Plugin> PluginNotePortsImpl for ClapMainThread<'_, P> {
             return;
         }
         let supported_dialects = if is_input {
-            NoteDialects::CLAP | NoteDialects::MIDI
+            NoteDialects::CLAP | NoteDialects::MIDI | NoteDialects::MIDI_MPE
         } else {
             NoteDialects::CLAP
         };
@@ -1427,6 +1454,14 @@ mod tests {
     }
 
     #[test]
+    fn every_clap_note_expression_is_known() {
+        let all: Vec<_> = (0..7).filter_map(expression).collect();
+        assert_eq!(all.len(), 7);
+        assert_eq!(all[4], Expression::Expression);
+        assert_eq!(expression(7), None);
+    }
+
+    #[test]
     fn midi_notes_become_note_events() {
         assert!(matches!(
             midi(5, 0, [0x91, 60, 127]),
@@ -1440,6 +1475,18 @@ mod tests {
             midi(0, 0, [0x80, 60, 64]),
             Some(Event::NoteOff { .. })
         ));
-        assert_eq!(midi(0, 0, [0xb0, 7, 100]), None);
+        assert_eq!(
+            midi(3, 1, [0xb2, 7, 100]),
+            Some(Event::Midi {
+                time: 3,
+                port: 1,
+                data: [0xb2, 7, 100]
+            })
+        );
+        assert!(matches!(
+            midi(0, 0, [0xe0, 0, 64]),
+            Some(Event::Midi { .. })
+        ));
+        assert_eq!(midi(0, 0, [0xf8, 0, 0]), None);
     }
 }
