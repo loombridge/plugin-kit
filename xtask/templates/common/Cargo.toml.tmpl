@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "{{rust_version}}"
+license = "{{licence}}"
+publish = false
+
+# The plug-in kit, by git revision until its API settles. Every kit crate
+# comes from the same revision. To work on the kit and this plug-in at once,
+# patch them to a local checkout (CONTRIBUTING.md, "Working on the plug-in kit
+# and ... at once") rather than editing these lines.
+[workspace.dependencies]
+{{kit_dependencies}}
+
+[workspace.lints.rust]
+rust_2018_idioms = { level = "warn", priority = -1 }
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"
+todo = "warn"
+undocumented_unsafe_blocks = "warn"
+unimplemented = "warn"

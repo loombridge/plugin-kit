@@ -7,9 +7,10 @@ use std::process::Command;
 use lspk_test::golden::UPDATE_ENV;
 use lspk_test::validate::{Format, Validator, clap_bundle};
 
-use crate::formats;
+use crate::{Repo, formats};
 
-/// The plug-in crates `cargo xtask validate` checks when none are named.
+/// The kit's example plug-ins, which its `cargo xtask validate` checks when
+/// none are named.
 pub const EXAMPLES: &[&str] = &[
     "lspk-example-gain",
     "lspk-example-modular",
@@ -76,22 +77,22 @@ pub fn golden(root: &Path, options: &[String]) -> Result<(), String> {
     }
 }
 
-/// Bundles each plug-in crate (the examples if none are named) and runs
+/// Bundles each plug-in crate (the repository's own if none are named) and runs
 /// every validator of each format it built: on macOS, each Audio Unit is
 /// installed in the user's Audio Unit folder while its validators run, and
 /// removed after.
-pub fn validate(root: &Path, packages: &[String]) -> Result<(), String> {
+pub fn validate(repo: &Repo, root: &Path, packages: &[String]) -> Result<(), String> {
     let packages: Vec<String> = if packages.is_empty() {
-        EXAMPLES.iter().map(|p| (*p).to_owned()).collect()
+        repo.plugins.iter().map(|p| (*p).to_owned()).collect()
     } else {
         packages.to_vec()
     };
-    let bundled = formats::bundle(root, &packages)?;
+    let bundled = formats::bundle(root, &packages, "")?;
     let target = formats::target_dir(root)?;
 
-    // Steinberg's validator, built from the vendored SDK, goes first on the
-    // PATH.
-    let tools = formats::build_vst3_validator(root)?;
+    // Steinberg's validator, built from the kit's vendored SDK, goes first
+    // on the PATH.
+    let tools = formats::build_vst3_validator(root, &repo.kit_root(root))?;
     let path = std::env::var_os("PATH").unwrap_or_default();
     let path = std::env::join_paths(std::iter::once(tools).chain(std::env::split_paths(&path)))
         .map_err(|e| format!("couldn't extend PATH: {e}"))?;

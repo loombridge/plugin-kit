@@ -24,12 +24,9 @@ pub struct Bundled {
 /// crate with a `<crate>-standalone` binary (`lspk-standalone`), the
 /// standalone app: `<crate>.app` on macOS, `<crate>.exe` on Windows and
 /// `<crate>` on Linux.
-pub fn bundle(root: &Path, packages: &[String]) -> Result<Vec<Bundled>, String> {
+pub fn bundle(root: &Path, packages: &[String], usage: &str) -> Result<Vec<Bundled>, String> {
     if packages.is_empty() {
-        return Err(format!(
-            "name the plug-in crates to bundle\n\n{}",
-            crate::USAGE
-        ));
+        return Err(format!("name the plug-in crates to bundle\n\n{usage}"));
     }
     let mut args = vec!["build", "--release", "--locked"];
     for package in packages {
@@ -214,16 +211,21 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Builds Steinberg's VST3 validator from the vendored SDK
-/// (`tools/vst3-validator`), into the workspace's target folder, and
-/// returns the folder that holds it, `vst3-validator`.
-pub fn build_vst3_validator(root: &Path) -> Result<PathBuf, String> {
+/// Builds Steinberg's VST3 validator from the kit's vendored SDK
+/// (`tools/vst3-validator` in the kit's checkout at `kit`), into the
+/// workspace's target folder, and returns the folder that holds it,
+/// `vst3-validator`.
+pub fn build_vst3_validator(root: &Path, kit: &Path) -> Result<PathBuf, String> {
     let target = target_dir(root)?.join("tools");
-    let manifest = root.join("tools/vst3-validator/Cargo.toml");
+    let tool = kit.join("tools/vst3-validator");
+    let manifest = tool.join("Cargo.toml");
     let manifest = manifest.to_string_lossy();
     let target_arg = target.to_string_lossy();
+    // From the tool's own folder, so a `[patch]` of the kit's crates in a
+    // folder above the repository (which the tool doesn't use) doesn't ask
+    // to change its lock file.
     cargo(
-        root,
+        &tool,
         &[
             "build",
             "--release",
