@@ -964,6 +964,10 @@ const LEVEL: usize = 6;
 const CHARACTER: usize = 7;
 /// How many smoothed settings each slot has.
 const PARAMS: usize = 8;
+/// How many of them every type smooths in its sample loop: all but
+/// character, which only the types that read it smooth, so the others
+/// keep their registers.
+const COMMON: usize = 7;
 /// The most state variables a type has: the 48-stage phasers'.
 const MAX_STATES: usize = 52;
 /// Every SIMD bank's stride is a multiple of the widest lanes.
@@ -1469,10 +1473,14 @@ impl<const N: usize, T: Topology<N>> Run<'_, N, T> {
             for g in 0..groups {
                 let voice = g * L::LANES;
                 let slot = c * bank.stride + voice;
-                let targets: [L; PARAMS] =
+                let targets: [L; COMMON] =
                     std::array::from_fn(|i| L::load(&bank.targets[i][voice..]));
-                let mut params: [L; PARAMS] =
+                let mut params: [L; COMMON] =
                     std::array::from_fn(|i| L::load(&bank.smoothed[i][slot..]));
+                let character = [
+                    L::load(&bank.targets[CHARACTER][voice..]),
+                    L::load(&bank.smoothed[CHARACTER][slot..]),
+                ];
                 let mut state: [L; N] = std::array::from_fn(|i| L::load(&bank.state[i][slot..]));
                 let block = Block {
                     pitch: self.pitch,
@@ -1490,16 +1498,20 @@ impl<const N: usize, T: Topology<N>> Run<'_, N, T> {
                     cursor: bank.cursor,
                     slot,
                 };
-                block.run::<L, N, T>(
+                let character = block.run::<L, N, T>(
                     &shared,
                     &targets,
                     &mut params,
+                    character,
                     &mut state,
                     &mut lines,
                     self.audio,
                 );
                 for (i, value) in params.iter().enumerate() {
                     value.store(&mut bank.smoothed[i][slot..]);
+                }
+                if T::CHARACTER {
+                    character.store(&mut bank.smoothed[CHARACTER][slot..]);
                 }
                 for (i, value) in state.iter().enumerate() {
                     value.store(&mut bank.state[i][slot..]);
@@ -1543,24 +1555,27 @@ fn g_at<L: Lane>(ratio: L, octaves: L) -> L {
 impl Block<'_> {
     /// Runs one group of lanes of one channel through the block.
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     fn run<L: Lane, const N: usize, T: Topology<N>>(
         &self,
         shared: &Shared<L>,
-        targets: &[L; PARAMS],
-        params: &mut [L; PARAMS],
+        targets: &[L; COMMON],
+        params: &mut [L; COMMON],
+        [character_target, mut character]: [L; 2],
         state: &mut [L; N],
         lines: &mut Lines<'_>,
         audio: &mut [f32],
-    ) {
+    ) -> L {
         let one = L::splat(1.0);
         for f in 0..self.frames {
             let pitch = L::load(&self.pitch[f * self.stride + self.voice..]);
             let at = f * self.frame_stride + self.slot;
             let x = L::load(&audio[at..]);
-            for (i, (p, t)) in params.iter_mut().zip(targets).enumerate() {
-                if i != CHARACTER || T::CHARACTER {
-                    *p = (*t - *p).fma(shared.alpha, *p);
-                }
+            for (p, t) in params.iter_mut().zip(targets) {
+                *p = (*t - *p).fma(shared.alpha, *p);
+            }
+            if T::CHARACTER {
+                character = (character_target - character).fma(shared.alpha, character);
             }
             // Cutoff: the pitch, offset for this channel, to the
             // prewarped integrator gain g = tan(π f / rate).
@@ -1578,7 +1593,7 @@ impl Block<'_> {
                 pitch,
                 r: params[RES],
                 inv_knee: params[INV_KNEE],
-                character: params[CHARACTER],
+                character,
                 drive: params[DRIVE],
                 ref_over_rate: self.ref_over_rate,
                 inv_rate: self.inv_rate,
@@ -1594,6 +1609,7 @@ impl Block<'_> {
             };
             out.store(&mut audio[at..]);
         }
+        character
     }
 }
 
