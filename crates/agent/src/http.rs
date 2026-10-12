@@ -33,7 +33,7 @@ use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use std::sync::RwLock;
 
@@ -50,6 +50,20 @@ pub const MAX_HEAD: usize = 16 * 1024;
 pub const MAX_BODY: usize = 8 * 1024 * 1024;
 /// How long an idle connection stays open.
 pub const IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long [`HttpServer::stop`] waits for connections' threads to finish.
+pub const STOP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// A new token for an agent server or an agent: 32 bytes from the operating
+/// system's secure random source, as 64 hexadecimal digits.
+///
+/// # Errors
+///
+/// The operating system gave no random bytes.
+pub fn new_token() -> io::Result<String> {
+    let mut bytes = [0u8; 32];
+    getrandom::fill(&mut bytes).map_err(|e| io::Error::other(e.to_string()))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
 
 /// What the server needs to start.
 #[derive(Clone, PartialEq, Eq)]
@@ -424,7 +438,10 @@ impl HttpServer {
     }
 
     /// Stops listening and closes every connection. Requests waiting for
-    /// the main thread get 503.
+    /// the main thread get 503. It waits, up to [`STOP_TIMEOUT`], for every
+    /// connection's thread to finish, so a plug-in's library can be
+    /// unloaded once it returns; drop any [`Parked`] and [`Pending`] jobs
+    /// first, or their connections wait the whole time.
     pub fn stop(mut self) {
         self.shutdown();
     }
@@ -440,6 +457,13 @@ impl HttpServer {
             for (_, stream) in connections.iter() {
                 let _ = stream.shutdown(Shutdown::Both);
             }
+        }
+        // Jobs nobody will serve: dropping each ends its connection's wait.
+        while self.jobs.try_recv().is_ok() {}
+        let deadline = Instant::now() + STOP_TIMEOUT;
+        while self.connections() > 0 && Instant::now() < deadline {
+            while self.jobs.try_recv().is_ok() {}
+            thread::sleep(Duration::from_millis(2));
         }
     }
 }

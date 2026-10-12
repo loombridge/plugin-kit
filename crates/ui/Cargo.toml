@@ -8,5 +8,49 @@ license = "MIT OR Apache-2.0"
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+lspk-params.workspace = true
+lspk-plugin.workspace = true
+# Pinned exactly and upgraded deliberately, with egui-baseview, which pins
+# egui's minor version and baseview's. Without `default_fonts`: egui's
+# bundled fonts are under the OFL and the Ubuntu Font Licence, which
+# deny.toml rejects, so the editor uses the platform's own UI font.
+egui = { version = "=0.36.2", default-features = false }
+# egui inside a baseview window, drawn with OpenGL (egui_glow). The keyboard
+# workaround takes the keyboard back when a control asks for it, as some
+# hosts keep it from embedded windows. `log` because 0.8.1 doesn't build
+# without a logging feature.
+egui-baseview = { version = "=0.8.1", default-features = false, features = [
+    "opengl",
+    "keyboard_focus_workaround",
+    "log",
+] }
+# The plug-in window inside the host's: NSView, HWND and X11 embedding,
+# resizing, the scale factor and the hosts' known focus troubles.
+baseview = { version = "=0.4.1", features = ["opengl"] }
+# The host's window, handed to baseview.
+raw-window-handle = "0.6.2"
+
+# The platforms' screen readers, through AccessKit's adapters on the editor's
+# view, at the AccessKit version egui uses.
+[target.'cfg(target_os = "macos")'.dependencies]
+accesskit_macos = "=0.26.3"
+# The Objective-C runtime, to give baseview's view the accessibility methods
+# AccessKit's adapter answers (src/accessibility.rs), at baseview's version.
+objc2 = "0.6.4"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+accesskit_windows = "=0.34.0"
+windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging"] }
+
+[dev-dependencies]
+# The host link's edit queue, read back in the tests.
+rtrb = "0.4.0"
+# The editor host example (examples/editor_host.rs): a CLAP host, pinned
+# as lspk-test pins it, around a plug-in built in with the CLAP export.
+lspk-plugin = { workspace = true, features = ["clap"] }
+clack-host = "=0.2.0"
+clack-extensions = { version = "=0.2.0", features = ["clack-host", "gui", "params"] }
+
 [lints]
 workspace = true

@@ -76,6 +76,9 @@ const HEADLESS: &[&str] = &[
     "lspk-wavetable",
     "lspk-seq",
     "lspk-presets",
+    // The format layer drives an editor through its own trait, so plug-ins
+    // and their tests build without a windowing system.
+    "lspk-plugin",
     XTASK,
 ];
 
@@ -534,9 +537,9 @@ mod tests {
     #[test]
     fn the_kit_as_planned_follows_the_rules() {
         let graph = graph(
-            &["lspk-ui", "lspk-plugin", "lspk-agent", "lspk-test"],
+            &["lspk-ui", "lspk-agent", "lspk-test"],
             &[
-                ("lspk-plugin", "lspk-ui"),
+                ("lspk-ui", "lspk-plugin"),
                 ("lspk-ui", "egui"),
                 ("lspk-ui", "lspk-params"),
                 ("lspk-dsp", "lspk-rt"),
@@ -564,6 +567,15 @@ mod tests {
     }
 
     #[test]
+    fn the_format_layer_reaching_the_ui_crate_is_caught() {
+        let graph = graph(&["lspk-ui"], &[("lspk-plugin", "lspk-ui")]);
+        assert_eq!(
+            layer_violations(&graph),
+            ["lspk-plugin depends on lspk-ui: lspk-plugin -> lspk-ui"]
+        );
+    }
+
+    #[test]
     fn a_headless_crate_reaching_a_toolkit_is_caught() {
         let graph = graph(&[], &[("lspk-voice", "winit")]);
         assert_eq!(
@@ -575,7 +587,7 @@ mod tests {
     #[test]
     fn depending_on_a_plug_in_or_beatlayer_is_caught() {
         let graph = graph(
-            &["lspk-plugin"],
+            &[],
             &[("lspk-plugin", "reagent-engine"), ("lspk-rt", "bl-rt")],
         );
         let violations = layer_violations(&graph);

@@ -9,11 +9,15 @@
 //! note takes the oldest. One parameter, [`LEVEL`], from −∞ dB to 0 dB,
 //! glides to each new value over 20 ms. The instrument sleeps while no
 //! voice sounds.
+//!
+//! It's exported with the agent interface ([`lspk_plugin_agent::WithAgent`]),
+//! so an agent can drive it in any host once the person switches its agent
+//! server on.
 
 use std::f64::consts::TAU;
 
 use lspk_params::smooth::DEFAULT_SMOOTHING_SECONDS;
-use lspk_params::{LinearSmoother, ParamDescriptor, ParamId};
+use lspk_params::{LinearSmoother, ParamDescriptor, ParamId, gain_to_db};
 use lspk_plugin::{
     AudioLayout, Buffers, Event, Events, Host, Note, NotePorts, ParamValues, Plugin, PluginError,
     PluginInfo, ProcessConfig, ProcessContext, ProcessStatus, Processor, features,
@@ -55,7 +59,9 @@ pub fn frequency(key: u8) -> f64 {
 
 /// The plug-in on the main thread.
 #[derive(Debug)]
-pub struct Sine;
+pub struct Sine {
+    host: Host,
+}
 
 impl Plugin for Sine {
     type Processor = SineProcessor;
@@ -73,12 +79,34 @@ impl Plugin for Sine {
         .audio(AudioLayout::instrument(2))
         .notes(NotePorts::INPUT);
 
-    fn new(_host: Host) -> Self {
-        Self
+    fn new(host: Host) -> Self {
+        Self { host }
     }
 
     fn params(&self) -> Vec<ParamDescriptor> {
         params()
+    }
+
+    fn summary(&self) -> Option<String> {
+        let level = self.host.param(LEVEL)?;
+        Some(format!(
+            "A polyphonic sine instrument: up to {VOICES} notes, each a pure sine at its key's \
+             equal-tempered pitch (A4 = 440 Hz) with a {:.0} ms attack, {:.0} ms decay to {:.0} % \
+             sustain and {:.0} ms release, scaled by velocity, at a level of {}.",
+            ATTACK * 1000.0,
+            DECAY * 1000.0,
+            SUSTAIN * 100.0,
+            RELEASE * 1000.0,
+            if level > 0.0 {
+                format!("{:.2} dB", gain_to_db(level))
+            } else {
+                "-inf dB (silence)".to_owned()
+            }
+        ))
+    }
+
+    fn editor(&mut self) -> Option<Box<dyn lspk_plugin::Editor>> {
+        Some(Box::new(lspk_ui::generic_editor(NAME, &params())))
     }
 
     fn activate(
@@ -339,4 +367,4 @@ impl Processor for SineProcessor {
     }
 }
 
-lspk_plugin::export_clap!(Sine);
+lspk_plugin::export_clap!(lspk_plugin_agent::WithAgent<Sine>);

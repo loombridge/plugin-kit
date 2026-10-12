@@ -15,6 +15,7 @@
 //! | [`stdio`] | The stdio transport, which a command-line tool serves headless |
 //! | [`http`] | The Streamable HTTP transport on `127.0.0.1`, with bearer tokens and host and origin checks |
 //! | [`client`] | A scripted MCP client over either, or in this process, for scripts and tests |
+//! | [`discovery`] | The discovery file, where running instances with their server on say how to reach them |
 //! | [`jsonrpc`] | JSON-RPC 2.0 messages |
 //! | [`base64`] | Base64, which MCP carries audio, images and binary resources in |
 //!
@@ -105,6 +106,7 @@
 
 pub mod base64;
 pub mod client;
+pub mod discovery;
 pub mod http;
 pub mod jsonrpc;
 pub mod permission;

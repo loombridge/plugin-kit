@@ -1,0 +1,609 @@
+//! A plug-in's editor: the window it draws its interface in, inside the
+//! host's.
+//!
+//! A plug-in opts in by returning an [`Editor`] from
+//! [`Plugin::editor`](crate::Plugin::editor); one without keeps working as
+//! before, with no window. The kit's CLAP export serves the editor through
+//! CLAP's `gui` extension, and the VST3 and Audio Unit builds made from the
+//! CLAP build get it through the same extension. `lspk-ui` provides
+//! editors drawn with egui, including a generic one for any plug-in's
+//! parameters; this module depends on no UI toolkit, so the format layer
+//! stays headless.
+//!
+//! # Life of an editor
+//!
+//! The kit asks for the editor once, as the instance starts, and keeps it
+//! for the instance's life. A host then opens and closes its window as
+//! many times as it likes, always on the main thread:
+//!
+//! 1. [`Editor::create`], with the window system and whether the window
+//!    floats on its own or sits inside one of the host's;
+//! 2. [`Editor::set_scale`], [`Editor::size`] or [`Editor::set_size`], and
+//!    the resize questions, in any order and at any time from here on;
+//! 3. [`Editor::set_parent`] for an embedded window, which is where the
+//!    window opens;
+//! 4. [`Editor::show`] and [`Editor::hide`], perhaps many times;
+//! 5. [`Editor::destroy`], which closes the window and frees everything it
+//!    held, ready for the next [`Editor::create`].
+//!
+//! # Sizes
+//!
+//! An [`EditorSize`] is in the window system's own units, as CLAP has it:
+//! logical points on macOS ([`WindowApi::uses_logical_size`]), and
+//! physical pixels on Windows and X11, where the host's scale factor
+//! ([`Editor::set_scale`]) turns one into the other.
+//!
+//! # Talking back
+//!
+//! An open editor reaches the plug-in and the host through its
+//! [`EditorContext`], from whichever thread its window runs on (the main
+//! thread on macOS and Windows, a thread of its own on X11). Every
+//! parameter change goes to the host as a gesture, so it records automation
+//! and undo exactly as for a person moving a control in its own interface.
+
+use std::collections::VecDeque;
+use std::ffi::c_void;
+use std::fmt;
+use std::ptr::NonNull;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
+
+use lspk_params::ParamId;
+
+use crate::PluginError;
+use crate::host::{EditError, Host};
+use crate::params::ParamValues;
+
+/// A window system an editor can open in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum WindowApi {
+    /// macOS's AppKit: the parent is an `NSView`.
+    AppKit,
+    /// Windows' Win32: the parent is an `HWND`.
+    Win32,
+    /// X11, on Linux: the parent is an X11 window ID.
+    X11,
+}
+
+impl WindowApi {
+    /// The window system of the platform this was built for, if the kit
+    /// supports one there.
+    #[must_use]
+    pub const fn native() -> Option<Self> {
+        if cfg!(target_os = "macos") {
+            Some(Self::AppKit)
+        } else if cfg!(target_os = "windows") {
+            Some(Self::Win32)
+        } else if cfg!(all(unix, not(target_os = "macos"))) {
+            Some(Self::X11)
+        } else {
+            None
+        }
+    }
+
+    /// Whether sizes in this window system are logical points (AppKit)
+    /// rather than physical pixels (Win32 and X11).
+    #[must_use]
+    pub const fn uses_logical_size(self) -> bool {
+        matches!(self, Self::AppKit)
+    }
+}
+
+/// A host's window, for an embedded editor to open inside.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParentWindow {
+    /// An AppKit `NSView`.
+    AppKit(NonNull<c_void>),
+    /// A Win32 `HWND`.
+    Win32(NonNull<c_void>),
+    /// An X11 window ID.
+    X11(u64),
+}
+
+impl ParentWindow {
+    /// The window system it belongs to.
+    #[must_use]
+    pub const fn api(self) -> WindowApi {
+        match self {
+            Self::AppKit(_) => WindowApi::AppKit,
+            Self::Win32(_) => WindowApi::Win32,
+            Self::X11(_) => WindowApi::X11,
+        }
+    }
+}
+
+/// An editor window's size, in its window system's units (see the
+/// [module documentation](self#sizes)).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct EditorSize {
+    /// Its width.
+    pub width: u32,
+    /// Its height.
+    pub height: u32,
+}
+
+impl EditorSize {
+    /// A size `width` by `height`.
+    #[must_use]
+    pub const fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+}
+
+/// How a host may resize an editor's window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ResizeHints {
+    /// It can be made wider and narrower.
+    pub horizontal: bool,
+    /// It can be made taller and shorter.
+    pub vertical: bool,
+    /// The width-to-height ratio it keeps, if it keeps one.
+    pub aspect_ratio: Option<(u32, u32)>,
+}
+
+/// A plug-in's editor, as the host drives it. Every method runs on the
+/// host's main thread; see the [module documentation](self) for the order
+/// a host calls them in.
+pub trait Editor: 'static {
+    /// Whether it can open in window system `api`, floating in a window of
+    /// its own (`floating`) or embedded in one of the host's.
+    fn supports(&self, api: WindowApi, floating: bool) -> bool;
+
+    /// Prepares to open in `api`, floating or embedded; nothing is visible
+    /// yet. `cx` is how the window will reach the plug-in and the host
+    /// once it's open.
+    ///
+    /// # Errors
+    ///
+    /// Why it can't open so.
+    fn create(
+        &mut self,
+        api: WindowApi,
+        floating: bool,
+        cx: EditorContext,
+    ) -> Result<(), PluginError>;
+
+    /// Closes the window, if it's open, and frees everything it held.
+    fn destroy(&mut self);
+
+    /// Takes the host's scale factor, overriding what the platform says.
+    /// Returns false if it works the scale out for itself, as it always
+    /// does on macOS.
+    fn set_scale(&mut self, scale: f64) -> bool;
+
+    /// Its window's size now, or the size it will open at.
+    fn size(&self) -> EditorSize;
+
+    /// How the host may resize it; `None` if its size is fixed.
+    fn resize_hints(&self) -> Option<ResizeHints>;
+
+    /// The size nearest `size` it can take.
+    fn adjust_size(&self, size: EditorSize) -> EditorSize;
+
+    /// Takes the size `size`, which the host has already adjusted. Returns
+    /// false if it can't.
+    fn set_size(&mut self, size: EditorSize) -> bool;
+
+    /// Opens its window inside `parent`, for an embedded editor.
+    ///
+    /// # Errors
+    ///
+    /// Why the window didn't open.
+    fn set_parent(&mut self, parent: ParentWindow) -> Result<(), PluginError>;
+
+    /// The title the host suggests for a floating window.
+    fn set_title(&mut self, title: &str) {
+        let _ = title;
+    }
+
+    /// Shows the window, opening a floating one first if need be.
+    ///
+    /// # Errors
+    ///
+    /// Why it couldn't be shown.
+    fn show(&mut self) -> Result<(), PluginError>;
+
+    /// Hides the window, keeping it open.
+    ///
+    /// # Errors
+    ///
+    /// Why it couldn't be hidden.
+    fn hide(&mut self) -> Result<(), PluginError>;
+
+    /// Called on the main thread after [`EditorContext::request_callback`].
+    fn on_main_thread(&mut self) {}
+}
+
+/// What an editor's window asks of the host, from any thread. A format's
+/// adapter implements it for its own host.
+pub trait EditorHost: Send + Sync + 'static {
+    /// Asks the host to call the plug-in back on the main thread soon,
+    /// where the editor's parameter changes reach it.
+    fn request_callback(&self);
+
+    /// Asks the host to resize the window it holds the editor in to
+    /// `size`. Returns whether the host agreed; it may still refuse later,
+    /// and then sets the editor's size back.
+    fn request_resize(&self, size: EditorSize) -> bool;
+
+    /// Tells the host the editor's window has closed by itself (a floating
+    /// window its close button closed, or a window the platform took away),
+    /// so the host destroys the editor. Called on the main thread, never
+    /// from inside a call into the editor.
+    fn closed(&self) {}
+}
+
+/// One change an editor makes to a parameter, on its way to the main
+/// thread.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Change {
+    Begin(ParamId),
+    Value(ParamId, f64),
+    End(ParamId),
+}
+
+/// An open editor's link to the plug-in and its host. It may be cloned and
+/// sent to the editor's window thread; every method may be called from any
+/// thread.
+///
+/// Parameter changes are recorded at once, so the editor draws them
+/// straight away, and reach the host as gestures from the main thread,
+/// where the kit passes them to [`Host`].
+#[derive(Clone)]
+pub struct EditorContext {
+    inner: Arc<ContextInner>,
+}
+
+struct ContextInner {
+    values: Arc<ParamValues>,
+    changes: Sender<Change>,
+    host: Box<dyn EditorHost>,
+    closed: AtomicBool,
+}
+
+impl EditorContext {
+    /// A link to the parameters `values`, reaching the host through
+    /// `host`, and the queue its changes arrive in on the main thread. For
+    /// a format's adapter.
+    #[must_use]
+    pub fn new(values: Arc<ParamValues>, host: Box<dyn EditorHost>) -> (Self, EditorChanges) {
+        let (changes, receiver) = channel();
+        let cx = Self {
+            inner: Arc::new(ContextInner {
+                values,
+                changes,
+                host,
+                closed: AtomicBool::new(false),
+            }),
+        };
+        (
+            cx,
+            EditorChanges {
+                receiver,
+                waiting: VecDeque::new(),
+            },
+        )
+    }
+
+    /// Every parameter's descriptor and value now, kept current from
+    /// every direction: the host's automation, the plug-in's own edits,
+    /// this editor's.
+    #[must_use]
+    pub fn values(&self) -> &ParamValues {
+        &self.inner.values
+    }
+
+    /// Starts a gesture on parameter `id`, as a person grabbing its
+    /// control does.
+    ///
+    /// # Errors
+    ///
+    /// There's no parameter `id`.
+    pub fn begin_edit(&self, id: ParamId) -> Result<(), EditError> {
+        self.check(id)?;
+        self.send(Change::Begin(id));
+        Ok(())
+    }
+
+    /// Sets parameter `id` to `value`, in its own units, clamped to its
+    /// range, during a gesture, and returns the value it took.
+    ///
+    /// # Errors
+    ///
+    /// There's no parameter `id`.
+    pub fn set_param(&self, id: ParamId, value: f64) -> Result<f64, EditError> {
+        let value = self
+            .inner
+            .values
+            .set(id, value)
+            .ok_or(EditError::UnknownParam(id))?;
+        self.send(Change::Value(id, value));
+        Ok(value)
+    }
+
+    /// Ends the gesture [`begin_edit`](Self::begin_edit) started.
+    ///
+    /// # Errors
+    ///
+    /// There's no parameter `id`.
+    pub fn end_edit(&self, id: ParamId) -> Result<(), EditError> {
+        self.check(id)?;
+        self.send(Change::End(id));
+        Ok(())
+    }
+
+    /// Sets parameter `id` to `value` in one gesture (begin, value, end),
+    /// as a typed value, a key press or a double-click does, and returns
+    /// the value it took.
+    ///
+    /// # Errors
+    ///
+    /// There's no parameter `id`.
+    pub fn edit(&self, id: ParamId, value: f64) -> Result<f64, EditError> {
+        self.check(id)?;
+        let value = self
+            .inner
+            .values
+            .set(id, value)
+            .ok_or(EditError::UnknownParam(id))?;
+        self.send(Change::Begin(id));
+        self.send(Change::Value(id, value));
+        self.send(Change::End(id));
+        Ok(value)
+    }
+
+    /// Asks the host to resize the window holding the editor to `size`, in
+    /// the window system's units. Returns whether it agreed.
+    pub fn request_resize(&self, size: EditorSize) -> bool {
+        !self.is_closed() && self.inner.host.request_resize(size)
+    }
+
+    /// Tells the host the window has closed by itself. Call it on the main
+    /// thread, from [`Editor::on_main_thread`], not from inside the
+    /// window's own event handling.
+    pub fn window_closed(&self) {
+        if !self.is_closed() {
+            self.inner.host.closed();
+        }
+    }
+
+    /// Asks the host to call [`Editor::on_main_thread`] soon.
+    pub fn request_callback(&self) {
+        if !self.is_closed() {
+            self.inner.host.request_callback();
+        }
+    }
+
+    /// Cuts the link, as the instance ends: every call after reaches
+    /// nothing. For a format's adapter.
+    pub fn close(&self) {
+        self.inner.closed.store(true, Ordering::Release);
+    }
+
+    /// Whether [`close`](Self::close) has cut the link.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.inner.closed.load(Ordering::Acquire)
+    }
+
+    fn check(&self, id: ParamId) -> Result<(), EditError> {
+        match self.inner.values.index_of(id) {
+            Some(_) => Ok(()),
+            None => Err(EditError::UnknownParam(id)),
+        }
+    }
+
+    fn send(&self, change: Change) {
+        if self.is_closed() {
+            return;
+        }
+        // The receiver lives as long as the instance; if it's gone, so is
+        // the host, and there's no one to tell.
+        if self.inner.changes.send(change).is_ok() {
+            self.inner.host.request_callback();
+        }
+    }
+}
+
+impl fmt::Debug for EditorContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EditorContext")
+            .field("closed", &self.is_closed())
+            .finish_non_exhaustive()
+    }
+}
+
+/// The main thread's end of an editor's parameter changes, which a format's
+/// adapter passes to the plug-in's [`Host`] in its main-thread callback.
+pub struct EditorChanges {
+    receiver: Receiver<Change>,
+    /// Changes the host's queue had no room for yet, oldest first.
+    waiting: VecDeque<Change>,
+}
+
+impl EditorChanges {
+    /// Passes every change waiting to `host`, as gestures the host hears.
+    /// Changes the plug-in has no room for yet stay, in order, for the
+    /// next call; returns how many it passed.
+    pub fn apply(&mut self, host: &Host) -> usize {
+        self.waiting.extend(self.receiver.try_iter());
+        let mut passed = 0;
+        while let Some(&change) = self.waiting.front() {
+            let result = match change {
+                Change::Begin(id) => host.begin_edit(id),
+                Change::Value(id, value) => host.set_param(id, value),
+                Change::End(id) => host.end_edit(id),
+            };
+            match result {
+                Err(EditError::QueueFull | EditError::NotReady) => break,
+                // An unknown parameter was refused when it was sent.
+                Ok(()) | Err(EditError::UnknownParam(_)) => {
+                    self.waiting.pop_front();
+                    passed += 1;
+                }
+            }
+        }
+        passed
+    }
+
+    /// Whether changes are waiting.
+    #[must_use]
+    pub fn is_empty(&mut self) -> bool {
+        self.waiting.extend(self.receiver.try_iter());
+        self.waiting.is_empty()
+    }
+}
+
+impl fmt::Debug for EditorChanges {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EditorChanges")
+            .field("waiting", &self.waiting.len())
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::host::{Edit, HostBackend};
+    use lspk_params::ParamDescriptor;
+    use std::sync::atomic::AtomicU32;
+
+    #[derive(Default)]
+    struct Calls {
+        callbacks: AtomicU32,
+        resizes: AtomicU32,
+    }
+
+    struct Recorder(Arc<Calls>);
+
+    impl EditorHost for Recorder {
+        fn request_callback(&self) {
+            self.0.callbacks.fetch_add(1, Ordering::Relaxed);
+        }
+
+        fn request_resize(&self, _size: EditorSize) -> bool {
+            self.0.resizes.fetch_add(1, Ordering::Relaxed);
+            true
+        }
+    }
+
+    struct Quiet;
+
+    impl HostBackend for Quiet {
+        fn request_flush(&self) {}
+        fn mark_dirty(&self) {}
+        fn request_restart(&self) {}
+        fn request_process(&self) {}
+        fn request_callback(&self) {}
+        fn values_changed(&self) {}
+    }
+
+    fn values() -> Arc<ParamValues> {
+        Arc::new(
+            ParamValues::new(vec![
+                ParamDescriptor::gain(ParamId(1), "Gain", 6.0, 0.0),
+                ParamDescriptor::toggle(ParamId(2), "On", true),
+            ])
+            .expect("valid parameters"),
+        )
+    }
+
+    #[test]
+    fn an_editors_changes_reach_the_host_as_gestures() {
+        let values = values();
+        let calls = Arc::new(Calls::default());
+        let (cx, mut changes) =
+            EditorContext::new(values.clone(), Box::new(Recorder(calls.clone())));
+        let host = Host::new(Box::new(Quiet));
+        let mut edits = host.connect(values.clone());
+
+        // A drag, from another thread, as on X11.
+        let drag = cx.clone();
+        std::thread::spawn(move || {
+            drag.begin_edit(ParamId(1)).expect("a parameter");
+            assert_eq!(drag.set_param(ParamId(1), 0.5), Ok(0.5));
+            assert_eq!(
+                drag.set_param(ParamId(1), 99.0),
+                Ok(lspk_params::db_to_gain(6.0))
+            );
+            drag.end_edit(ParamId(1)).expect("a parameter");
+        })
+        .join()
+        .expect("the window thread");
+        // Recorded at once, for the editor to draw.
+        assert_eq!(values.get(ParamId(1)), Some(lspk_params::db_to_gain(6.0)));
+        assert_eq!(cx.edit(ParamId(2), 0.0), Ok(0.0));
+        assert_eq!(
+            cx.edit(ParamId(9), 0.0),
+            Err(EditError::UnknownParam(ParamId(9)))
+        );
+        assert!(calls.callbacks.load(Ordering::Relaxed) >= 7);
+
+        assert_eq!(changes.apply(&host), 7);
+        assert!(changes.is_empty());
+        let queued: Vec<Edit> = std::iter::from_fn(|| edits.pop().ok()).collect();
+        let max = lspk_params::db_to_gain(6.0);
+        assert_eq!(
+            queued,
+            [
+                Edit::Begin(ParamId(1)),
+                Edit::Value {
+                    id: ParamId(1),
+                    value: 0.5,
+                    echo: true
+                },
+                Edit::Value {
+                    id: ParamId(1),
+                    value: max,
+                    echo: true
+                },
+                Edit::End(ParamId(1)),
+                Edit::Begin(ParamId(2)),
+                Edit::Value {
+                    id: ParamId(2),
+                    value: 0.0,
+                    echo: true
+                },
+                Edit::End(ParamId(2)),
+            ]
+        );
+    }
+
+    #[test]
+    fn changes_wait_while_the_queue_is_full() {
+        let values = values();
+        let (cx, mut changes) =
+            EditorContext::new(values.clone(), Box::new(Recorder(Arc::default())));
+        let host = Host::new(Box::new(Quiet));
+        // Not connected yet: nothing passes, nothing is lost.
+        cx.edit(ParamId(2), 0.0).expect("a parameter");
+        assert_eq!(changes.apply(&host), 0);
+        let _edits = host.connect(values);
+        assert_eq!(changes.apply(&host), 3);
+    }
+
+    #[test]
+    fn a_closed_link_reaches_nothing() {
+        let calls = Arc::new(Calls::default());
+        let (cx, mut changes) = EditorContext::new(values(), Box::new(Recorder(calls.clone())));
+        cx.close();
+        assert!(!cx.request_resize(EditorSize::new(10, 10)));
+        cx.edit(ParamId(1), 0.5).expect("still recorded");
+        cx.request_callback();
+        assert!(changes.is_empty());
+        assert_eq!(calls.callbacks.load(Ordering::Relaxed), 0);
+        assert_eq!(calls.resizes.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn only_appkit_sizes_are_logical() {
+        assert!(WindowApi::AppKit.uses_logical_size());
+        assert!(!WindowApi::Win32.uses_logical_size());
+        assert!(!WindowApi::X11.uses_logical_size());
+        assert!(WindowApi::native().is_some());
+        let parent = ParentWindow::X11(7);
+        assert_eq!(parent.api(), WindowApi::X11);
+    }
+}

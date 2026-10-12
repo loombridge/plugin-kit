@@ -2,9 +2,10 @@
 //!
 //! [`export_clap!`](crate::export_clap) in a plug-in's `cdylib` crate makes
 //! it a CLAP plug-in with the `params`, `state`, `audio-ports`,
-//! `note-ports`, `latency` and `tail` extensions. The glue between CLAP's
-//! calls and the [`Plugin`] and [`Processor`] traits allocates nothing,
-//! locks nothing and never blocks on the audio thread.
+//! `note-ports`, `latency`, `tail` and `track-info` extensions, and `gui`
+//! for a plug-in with an [`Editor`](crate::Editor). The glue between
+//! CLAP's calls and the [`Plugin`] and [`Processor`] traits allocates
+//! nothing, locks nothing and never blocks on the audio thread.
 //!
 //! What the host sees of each parameter: a continuous or gain parameter as
 //! its control's travel from 0 to 1, a stepped one as its whole-number
@@ -16,11 +17,17 @@ use std::ffi::CStr;
 use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use clack_extensions::audio_ports::{
     AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
     PluginAudioPortsImpl,
+};
+use clack_extensions::gui::{
+    AspectRatioStrategy, GuiApiType, GuiConfiguration, GuiResizeHints, GuiSize, HostGui, PluginGui,
+    PluginGuiImpl, Window as ClapWindow,
 };
 use clack_extensions::latency::{PluginLatency, PluginLatencyImpl};
 use clack_extensions::note_ports::{
@@ -33,6 +40,9 @@ use clack_extensions::params::{
 };
 use clack_extensions::state::{HostState, PluginState, PluginStateImpl};
 use clack_extensions::tail::{PluginTail, PluginTailImpl, TailLength};
+use clack_extensions::track_info::{
+    HostTrackInfo, PluginTrackInfo, PluginTrackInfoImpl, TrackInfoBuffer,
+};
 use clack_plugin::entry::{DefaultPluginFactory, SinglePluginEntry};
 use clack_plugin::events::event_types::{
     NoteEndEvent, ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
@@ -56,8 +66,11 @@ use lspk_params::{ParamDescriptor, ParamId, ParamKind};
 use rtrb::Consumer;
 
 use crate::audio::{Buffers, MAX_CHANNELS};
+use crate::editor::{
+    Editor, EditorChanges, EditorContext, EditorHost, EditorSize, ParentWindow, WindowApi,
+};
 use crate::events::{Event, EventSource, Events, Note};
-use crate::host::{Edit, EventSink, Host, HostBackend, OutputEvent, ProcessContext};
+use crate::host::{Edit, EventSink, Host, HostBackend, OutputEvent, ProcessContext, Waker};
 use crate::params::ParamValues;
 use crate::{Plugin, ProcessConfig, ProcessStatus, Processor, Tail, state};
 
@@ -210,16 +223,20 @@ impl<P: Plugin> ClackPlugin for ClapPlugin<P> {
 
     fn declare_extensions(
         builder: &mut PluginExtensions<'_, Self>,
-        _shared: Option<&ClapShared<'_, P>>,
+        shared: Option<&ClapShared<'_, P>>,
     ) {
         builder
             .register::<PluginAudioPorts>()
             .register::<PluginParams>()
             .register::<PluginState>()
             .register::<PluginLatency>()
-            .register::<PluginTail>();
+            .register::<PluginTail>()
+            .register::<PluginTrackInfo>();
         if P::INFO.notes.input || P::INFO.notes.output {
             builder.register::<PluginNotePorts>();
+        }
+        if shared.is_some_and(|shared| shared.has_editor.load(Ordering::Acquire)) {
+            builder.register::<PluginGui>();
         }
     }
 }
@@ -236,37 +253,76 @@ impl<P: Plugin> DefaultPluginFactory for ClapPlugin<P> {
     }
 
     fn new_shared(_host: HostSharedHandle<'_>) -> Result<ClapShared<'_, P>, ClackError> {
-        Ok(ClapShared(PhantomData, PhantomData))
+        Ok(ClapShared {
+            has_editor: AtomicBool::new(false),
+            _lifetime: PhantomData,
+            _plugin: PhantomData,
+        })
     }
 
     fn new_main_thread<'a>(
         host: HostMainThreadHandle<'a>,
-        _shared: &'a ClapShared<'a, P>,
+        shared: &'a ClapShared<'a, P>,
     ) -> Result<ClapMainThread<'a, P>, ClackError> {
         let backend = ClapBackend {
             params: host.get_extension::<HostParams>(),
             state: host.get_extension::<HostState>(),
+            track_info: host.get_extension::<HostTrackInfo>(),
+            // SAFETY: as for `host` below: `ClapBackend`'s `Drop` empties
+            // the waker before the instance ends, so no thread reaches the
+            // handle after that.
+            waker: Arc::new(ClapWaker(Mutex::new(Some(unsafe {
+                host.with_arbitrary_lifetime().shared()
+            })))),
             // SAFETY: the handle lives only in this instance's `Host`, which
             // `ClapMainThread` disconnects when it's dropped, before the
             // instance ends; no call reaches the handle after that.
             host: unsafe { host.with_arbitrary_lifetime() },
         };
+        let gui = host.get_extension::<HostGui>();
+        let shared_host = host.shared();
         let link = Host::new(Box::new(backend));
-        let plugin = P::new(link.clone());
+        let mut plugin = P::new(link.clone());
         let values = Arc::new(ParamValues::new(plugin.params())?);
         let edits = link.connect(values.clone());
+        let editor = plugin.editor().map(|editor| {
+            let (cx, changes) = EditorContext::new(
+                values.clone(),
+                Box::new(ClapEditorHost {
+                    // SAFETY: the handle lives only in this instance's
+                    // editor context, which `ClapMainThread` closes when
+                    // it's dropped, after destroying the editor's window and
+                    // before the instance ends; no call reaches the handle
+                    // after that.
+                    host: unsafe { shared_host.with_arbitrary_lifetime() },
+                    gui,
+                }),
+            );
+            ClapEditor {
+                editor: RefCell::new(editor),
+                cx,
+                changes: RefCell::new(changes),
+            }
+        });
+        shared.has_editor.store(editor.is_some(), Ordering::Release);
         Ok(ClapMainThread {
             values,
             plugin: RefCell::new(plugin),
             host: link,
             edits: RefCell::new(Some(edits)),
+            editor,
             _shared: PhantomData,
         })
     }
 }
 
-/// What every thread shares: nothing beyond what the two halves hold.
-pub struct ClapShared<'a, P>(PhantomData<&'a ()>, PhantomData<fn() -> P>);
+/// What every thread shares: whether the plug-in has an editor, which
+/// decides whether the host sees the `gui` extension.
+pub struct ClapShared<'a, P> {
+    has_editor: AtomicBool,
+    _lifetime: PhantomData<&'a ()>,
+    _plugin: PhantomData<fn() -> P>,
+}
 
 impl<'a, P: Plugin> PluginShared<'a> for ClapShared<'a, P> {}
 
@@ -275,6 +331,29 @@ struct ClapBackend {
     host: HostMainThreadHandle<'static>,
     params: Option<HostParams>,
     state: Option<HostState>,
+    track_info: Option<HostTrackInfo>,
+    waker: Arc<ClapWaker>,
+}
+
+/// The host's thread-safe handle, for asking for a main-thread callback
+/// from any thread; emptied as the instance ends, after which it does
+/// nothing.
+struct ClapWaker(Mutex<Option<HostSharedHandle<'static>>>);
+
+impl ClapWaker {
+    fn wake(&self) {
+        // Never on an audio thread: only an agent server's threads and the
+        // main thread take this lock.
+        if let Some(host) = *self.0.lock().unwrap_or_else(PoisonError::into_inner) {
+            host.request_callback();
+        }
+    }
+}
+
+impl Drop for ClapBackend {
+    fn drop(&mut self) {
+        *self.waker.0.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
 }
 
 impl HostBackend for ClapBackend {
@@ -307,6 +386,59 @@ impl HostBackend for ClapBackend {
             params.rescan(&self.host, ParamRescanFlags::VALUES);
         }
     }
+
+    fn waker(&self) -> Option<Waker> {
+        let waker = Arc::clone(&self.waker);
+        Some(Arc::new(move || waker.wake()))
+    }
+
+    fn host_name(&self) -> Option<String> {
+        let name = self.host.name()?.to_string_lossy().trim().to_owned();
+        (!name.is_empty()).then_some(name)
+    }
+
+    fn track_name(&self) -> Option<String> {
+        let mut host = self.host;
+        let mut buffer = TrackInfoBuffer::new();
+        let info = self.track_info?.get(&mut host, &mut buffer)?;
+        let name = String::from_utf8_lossy(info.name()?).trim().to_owned();
+        (!name.is_empty()).then_some(name)
+    }
+}
+
+/// The CLAP host as an [`EditorHost`], reached from the editor's window
+/// thread: requesting a callback and a resize are thread-safe in CLAP, and
+/// the editor says it's closed on the main thread.
+struct ClapEditorHost {
+    host: HostSharedHandle<'static>,
+    gui: Option<HostGui>,
+}
+
+impl EditorHost for ClapEditorHost {
+    fn request_callback(&self) {
+        self.host.request_callback();
+    }
+
+    fn closed(&self) {
+        if let Some(gui) = self.gui {
+            gui.closed(&self.host, true);
+        }
+    }
+
+    fn request_resize(&self, size: EditorSize) -> bool {
+        self.gui.is_some_and(|gui| {
+            gui.request_resize(&self.host, size.width, size.height)
+                .is_ok()
+        })
+    }
+}
+
+/// A plug-in's editor, its link to the plug-in, and the main thread's end
+/// of that link.
+struct ClapEditor {
+    editor: RefCell<Box<dyn Editor>>,
+    cx: EditorContext,
+    changes: RefCell<EditorChanges>,
 }
 
 /// The main thread's side: the plug-in, and the edit queue while the
@@ -318,19 +450,43 @@ pub struct ClapMainThread<'a, P: Plugin> {
     /// The queue of the plug-in's edits, here while inactive and with the
     /// processor while active.
     edits: RefCell<Option<Consumer<Edit>>>,
+    /// The plug-in's editor, if it has one.
+    editor: Option<ClapEditor>,
     _shared: PhantomData<&'a ClapShared<'a, P>>,
 }
 
 impl<P: Plugin> Drop for ClapMainThread<'_, P> {
     fn drop(&mut self) {
+        if let Some(editor) = &self.editor {
+            // The window goes first, so nothing on its thread is still
+            // using the context when it's closed.
+            editor.editor.borrow_mut().destroy();
+            editor.cx.close();
+        }
         self.host.disconnect();
     }
 }
 
 impl<'a, P: Plugin> PluginMainThread<'a, ClapShared<'a, P>> for ClapMainThread<'a, P> {
     fn on_main_thread(&self) {
+        if let Some(editor) = &self.editor {
+            if let Ok(mut changes) = editor.changes.try_borrow_mut() {
+                changes.apply(&self.host);
+            }
+            if let Ok(mut editor) = editor.editor.try_borrow_mut() {
+                editor.on_main_thread();
+            }
+        }
         if let Ok(mut plugin) = self.plugin.try_borrow_mut() {
             plugin.on_main_thread();
+        }
+    }
+}
+
+impl<P: Plugin> PluginTrackInfoImpl for ClapMainThread<'_, P> {
+    fn changed(&self) {
+        if let Ok(mut plugin) = self.plugin.try_borrow_mut() {
+            plugin.track_info_changed();
         }
     }
 }
@@ -868,6 +1024,173 @@ impl<P: Plugin> PluginNotePortsImpl for ClapMainThread<'_, P> {
     }
 }
 
+/// The kit's name for CLAP's window API `api`, if it's one the kit knows.
+fn window_api(api: GuiApiType<'_>) -> Option<WindowApi> {
+    if api == GuiApiType::COCOA {
+        Some(WindowApi::AppKit)
+    } else if api == GuiApiType::WIN32 {
+        Some(WindowApi::Win32)
+    } else if api == GuiApiType::X11 {
+        Some(WindowApi::X11)
+    } else {
+        None
+    }
+}
+
+/// CLAP's name for the kit's window API `api`.
+fn gui_api(api: WindowApi) -> GuiApiType<'static> {
+    match api {
+        WindowApi::AppKit => GuiApiType::COCOA,
+        WindowApi::Win32 => GuiApiType::WIN32,
+        WindowApi::X11 => GuiApiType::X11,
+    }
+}
+
+/// The host's window as the kit's.
+#[allow(
+    clippy::useless_conversion,
+    reason = "an X11 window ID is a `c_ulong`, which is 32 bits on Windows"
+)]
+fn parent_window(window: &ClapWindow<'_, '_>) -> Option<ParentWindow> {
+    match window_api(window.api_type())? {
+        WindowApi::AppKit => NonNull::new(window.as_cocoa_nsview()?).map(ParentWindow::AppKit),
+        WindowApi::Win32 => NonNull::new(window.as_win32_hwnd()?).map(ParentWindow::Win32),
+        WindowApi::X11 => Some(ParentWindow::X11(u64::from(window.as_x11_handle()?))),
+    }
+}
+
+impl<P: Plugin> ClapMainThread<'_, P> {
+    /// Runs `f` on the editor, if there is one and it isn't already busy
+    /// (a host may call back into the plug-in from inside a request the
+    /// editor makes).
+    fn with_editor<T>(&self, f: impl FnOnce(&mut dyn Editor, &EditorContext) -> T) -> Option<T> {
+        let editor = self.editor.as_ref()?;
+        let mut inner = editor.editor.try_borrow_mut().ok()?;
+        Some(f(inner.as_mut(), &editor.cx))
+    }
+}
+
+/// `true` as `Ok`, and `false` as the error CLAP's `false` stands for.
+fn refused(ok: bool, what: &'static str) -> Result<(), ClackError> {
+    if ok {
+        Ok(())
+    } else {
+        Err(ClackError::Message(what))
+    }
+}
+
+impl<P: Plugin> PluginGuiImpl for ClapMainThread<'_, P> {
+    fn is_api_supported(&self, configuration: GuiConfiguration<'_>) -> bool {
+        window_api(configuration.api_type).is_some_and(|api| {
+            self.with_editor(|editor, _| editor.supports(api, configuration.is_floating))
+                .unwrap_or(false)
+        })
+    }
+
+    fn get_preferred_api(&self) -> Option<GuiConfiguration<'_>> {
+        let api = WindowApi::native()?;
+        let embedded = self.with_editor(|editor, _| editor.supports(api, false))?;
+        Some(GuiConfiguration {
+            api_type: gui_api(api),
+            is_floating: !embedded,
+        })
+    }
+
+    fn create(&self, configuration: GuiConfiguration<'_>) -> Result<(), ClackError> {
+        let api = window_api(configuration.api_type)
+            .ok_or(ClackError::Message("the kit doesn't know this window API"))?;
+        self.with_editor(|editor, cx| editor.create(api, configuration.is_floating, cx.clone()))
+            .ok_or(ClackError::Message("the editor is busy"))??;
+        Ok(())
+    }
+
+    fn destroy(&self) {
+        self.with_editor(|editor, _| editor.destroy());
+        // Gestures the window started reach the host before it closes.
+        if let Some(editor) = &self.editor
+            && let Ok(mut changes) = editor.changes.try_borrow_mut()
+        {
+            changes.apply(&self.host);
+        }
+    }
+
+    fn set_scale(&self, scale: f64) -> Result<(), ClackError> {
+        let applied = self.with_editor(|editor, _| editor.set_scale(scale));
+        refused(applied == Some(true), "the editor finds its own scale")
+    }
+
+    fn get_size(&self) -> Option<GuiSize> {
+        let size = self.with_editor(|editor, _| editor.size())?;
+        Some(GuiSize {
+            width: size.width,
+            height: size.height,
+        })
+    }
+
+    fn can_resize(&self) -> bool {
+        self.with_editor(|editor, _| editor.resize_hints().is_some())
+            .unwrap_or(false)
+    }
+
+    fn get_resize_hints(&self) -> Option<GuiResizeHints> {
+        let hints = self.with_editor(|editor, _| editor.resize_hints())??;
+        Some(GuiResizeHints {
+            can_resize_horizontally: hints.horizontal,
+            can_resize_vertically: hints.vertical,
+            strategy: match hints.aspect_ratio {
+                Some((width, height)) => AspectRatioStrategy::Preserve { width, height },
+                None => AspectRatioStrategy::Disregard,
+            },
+        })
+    }
+
+    fn adjust_size(&self, size: GuiSize) -> Option<GuiSize> {
+        let size = EditorSize::new(size.width, size.height);
+        let adjusted = self.with_editor(|editor, _| editor.adjust_size(size))?;
+        Some(GuiSize {
+            width: adjusted.width,
+            height: adjusted.height,
+        })
+    }
+
+    fn set_size(&self, size: GuiSize) -> Result<(), ClackError> {
+        let size = EditorSize::new(size.width, size.height);
+        let applied = self.with_editor(|editor, _| editor.set_size(size));
+        refused(applied == Some(true), "the editor can't take this size")
+    }
+
+    fn set_parent(&self, window: ClapWindow<'_, '_>) -> Result<(), ClackError> {
+        let parent = parent_window(&window).ok_or(ClackError::Message(
+            "the host's window isn't one the kit knows",
+        ))?;
+        self.with_editor(|editor, _| editor.set_parent(parent))
+            .ok_or(ClackError::Message("the editor is busy"))??;
+        Ok(())
+    }
+
+    fn set_transient(&self, _window: ClapWindow<'_, '_>) -> Result<(), ClackError> {
+        Err(ClackError::Message(
+            "a floating editor doesn't follow the host's window",
+        ))
+    }
+
+    fn suggest_title(&self, title: &str) {
+        self.with_editor(|editor, _| editor.set_title(title));
+    }
+
+    fn show(&self) -> Result<(), ClackError> {
+        self.with_editor(|editor, _| editor.show())
+            .ok_or(ClackError::Message("the editor is busy"))??;
+        Ok(())
+    }
+
+    fn hide(&self) -> Result<(), ClackError> {
+        self.with_editor(|editor, _| editor.hide())
+            .ok_or(ClackError::Message("the editor is busy"))??;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -901,6 +1224,17 @@ mod tests {
         );
         assert_eq!(note(Pckn::new(0u16, 3u16, 200u16, Match::All)), None);
         assert_eq!(note(Pckn::new(0u16, 16u16, 60u16, Match::All)), None);
+    }
+
+    #[test]
+    fn window_apis_match_clap_s() {
+        for api in [WindowApi::AppKit, WindowApi::Win32, WindowApi::X11] {
+            assert_eq!(window_api(gui_api(api)), Some(api));
+            assert_eq!(gui_api(api).uses_logical_size(), api.uses_logical_size());
+        }
+        assert_eq!(window_api(GuiApiType::WAYLAND), None);
+        let window = ClapWindow::from_x11_handle(42);
+        assert_eq!(parent_window(&window), Some(ParentWindow::X11(42)));
     }
 
     #[test]

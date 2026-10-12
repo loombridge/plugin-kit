@@ -14,6 +14,11 @@
 //! | [`validate`] | The format validators CI runs on built plug-ins: clap-validator, Steinberg's VST3 validator, auval and pluginval |
 //! | [`agent`] | The scripted MCP client for a plug-in's agent tests |
 //!
+//! The format hosts (`clap`, `vst3`, `auv2`) are the `hosts` feature, on by
+//! default. Without it the crate is the render harness, the signals and the
+//! measurements alone, which a plug-in's agent interface uses at run time
+//! to hear itself (`lspk-plugin-agent`'s preview).
+//!
 //! # The allocation trap
 //!
 //! A test crate installs the trap once, with `lspk_rt::install_trap!();`.
@@ -43,9 +48,10 @@
 //! ```
 
 pub mod agent;
-#[cfg(target_os = "macos")]
+#[cfg(all(feature = "hosts", target_os = "macos"))]
 pub mod auv2;
 pub mod bench;
+#[cfg(feature = "hosts")]
 pub mod clap;
 pub mod cpu;
 pub mod golden;
@@ -53,7 +59,9 @@ pub mod measure;
 pub mod render;
 pub mod signal;
 pub mod validate;
+#[cfg(feature = "hosts")]
 pub mod vst3;
 
+#[cfg(feature = "hosts")]
 pub use clap::ClapTestHost;
 pub use render::{Instance, Output, Render, Script, Settings, render};
