@@ -65,7 +65,7 @@ pub use state::with_server;
 
 use lspk_commands::{RegisterError, Registry};
 use lspk_params::ParamDescriptor;
-use lspk_plugin::{Host, ParamValues, Plugin, PluginError, PluginInfo, ProcessConfig};
+use lspk_plugin::{Editor, Host, ParamValues, Plugin, PluginError, PluginInfo, ProcessConfig};
 use serde_json::Value;
 
 use crate::commands::{Edits, SERVER_STATUS, SET_SERVER, SetServerArgs};
@@ -189,6 +189,10 @@ impl<P: Plugin> Plugin for WithAgent<P> {
 
     fn summary(&self) -> Option<String> {
         self.plugin.summary()
+    }
+
+    fn editor(&mut self) -> Option<Box<dyn Editor>> {
+        self.plugin.editor()
     }
 
     fn register_commands(&self, registry: &mut Registry) -> Result<(), RegisterError> {

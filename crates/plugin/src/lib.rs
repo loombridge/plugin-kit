@@ -44,6 +44,15 @@
 //! state marked dirty. The host's automation, undo and saved project then
 //! match the sound.
 //!
+//! # An editor
+//!
+//! A plug-in with an interface returns an [`Editor`] from
+//! [`Plugin::editor`]; the CLAP export serves it through CLAP's `gui`
+//! extension, which the VST3 and Audio Unit builds made from the CLAP build
+//! wrap in their own. The [`editor`] module says how a host drives it, and
+//! `lspk-ui` provides editors drawn with egui. A plug-in without one has no
+//! window, and this crate reaches no UI toolkit either way.
+//!
 //! # Values the host sees
 //!
 //! Values in the kit are always in a parameter's own units, as its
@@ -55,6 +64,7 @@
 
 pub mod audio;
 pub mod bundle;
+pub mod editor;
 pub mod events;
 pub mod host;
 pub mod params;
@@ -64,6 +74,7 @@ pub mod state;
 pub mod clap;
 
 pub use audio::{Buffers, MAX_CHANNELS};
+pub use editor::{Editor, EditorContext, EditorSize, ParentWindow, ResizeHints, WindowApi};
 pub use events::{Event, EventSource, Events, Note};
 pub use host::{EditError, EventSink, Host, HostBackend, OutputEvent, ProcessContext, Waker};
 pub use lspk_commands::{RegisterError, Registry};
@@ -100,6 +111,9 @@ use std::fmt;
 ///   from [`Plugin::on_main_thread`], woken from its own threads through
 ///   [`Host::waker`], changes parameters through [`Host::edit`], and reads
 ///   [`Plugin::summary`], [`Host::host_name`] and [`Host::track_name`].
+/// - **R0.10, the editor:** [`Plugin::editor`], served through CLAP's
+///   `gui` extension, which `clap-wrapper` turns into VST3's and Audio
+///   Units' views.
 /// - **R0.14, the parameter space:** hierarchical [`ParamId`]s within the
 ///   32 bits every format gives an ID, and descriptors that
 ///   [`Plugin::params`] returns afresh when the host rescans.
@@ -181,6 +195,14 @@ pub trait Plugin: Sized + 'static {
     /// what it's set to do, and how the sound flows through it. `None`
     /// leaves agents the parameters alone.
     fn summary(&self) -> Option<String> {
+        None
+    }
+
+    /// The plug-in's editor, if it has one: asked for once, as the
+    /// instance starts, and kept for its life while the host opens and
+    /// closes its window. It should hold no window until
+    /// [`Editor::create`]. Without one, the host offers no window.
+    fn editor(&mut self) -> Option<Box<dyn Editor>> {
         None
     }
 
