@@ -1,0 +1,31 @@
+[package]
+name = "lspk-example-modular"
+description = "A small modular synthesiser built on the plug-in kit: fixed oscillator, filter and envelope modules and a two-slot effects rack, for the kit's parameter-space tests. Never published."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish = false
+
+[lib]
+# The cdylib is the CLAP plug-in; the rlib lets its tests reach its types and
+# its entry point, and makes Cargo build the cdylib beside them.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lspk-params.workspace = true
+# CLAP natively, with VST3 and (on macOS) Audio Unit v2 made from it.
+lspk-plugin = { workspace = true, features = ["clap", "vst3", "auv2"] }
+# The generic editor: every visible parameter drawn from its view.
+lspk-ui.workspace = true
+# The agent interface: its parameters by name and path.
+lspk-plugin-agent.workspace = true
+
+[dev-dependencies]
+lspk-rt.workspace = true
+lspk-test.workspace = true
+serde_json = "1"
+
+[lints]
+workspace = true

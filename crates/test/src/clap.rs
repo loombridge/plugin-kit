@@ -8,11 +8,16 @@
 //! from a `.clap` file is checked only on the host's side; load it from its
 //! entry point ([`ClapTestHost::from_entry`]) to check the plug-in too.
 //!
+//! It records what the plug-in tells it about its parameters: each rescan
+//! and its flags ([`ClapTestHost::take_rescans`]), and that its
+//! remote-controls pages changed, which [`ClapTestHost::remote_pages`]
+//! reads.
+//!
 //! [`ClapTestHost::render`] plays a [`Script`] as the in-process harness
 //! does ([`crate::render`](mod@crate::render)), so a test can render the same script both
 //! ways and compare.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
@@ -25,6 +30,9 @@ use clack_extensions::note_ports::{NotePortInfoBuffer, PluginNotePorts};
 use clack_extensions::params::{
     HostParams, HostParamsImplMainThread, HostParamsImplShared, ParamClearFlags, ParamInfoBuffer,
     ParamInfoFlags, ParamRescanFlags, PluginParams,
+};
+use clack_extensions::remote_controls::{
+    HostRemoteControls, HostRemoteControlsImpl, PluginRemoteControls, RemoteControlsPageBuffer,
 };
 use clack_extensions::state::{HostState, HostStateImpl, PluginState};
 use clack_extensions::tail::PluginTail;
@@ -155,6 +163,37 @@ pub struct ParamInfo {
     pub is_enum: bool,
     /// Whether automation can move it.
     pub automatable: bool,
+    /// Whether the host should hide it.
+    pub hidden: bool,
+    /// The module it's in, as CLAP's module path; empty for none.
+    pub module: String,
+}
+
+/// One rescan the plug-in asked for, by its flags.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Rescan {
+    /// Values changed.
+    pub values: bool,
+    /// Value text changed.
+    pub text: bool,
+    /// Names, modules or the hidden and periodic flags changed.
+    pub info: bool,
+    /// Everything: parameters added or removed, ranges or other flags
+    /// changed. Allowed only while the plug-in is inactive.
+    pub all: bool,
+}
+
+/// A remote-controls page, as the plug-in describes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemotePageInfo {
+    /// Its ID.
+    pub id: u32,
+    /// Its section.
+    pub section: String,
+    /// Its name.
+    pub name: String,
+    /// Its eight controls' parameter IDs.
+    pub params: [Option<u32>; 8],
 }
 
 /// One processed block.
@@ -273,6 +312,8 @@ impl ClapTestHost {
                     stepped: info.flags.contains(ParamInfoFlags::IS_STEPPED),
                     is_enum: info.flags.contains(ParamInfoFlags::IS_ENUM),
                     automatable: info.flags.contains(ParamInfoFlags::IS_AUTOMATABLE),
+                    hidden: info.flags.contains(ParamInfoFlags::IS_HIDDEN),
+                    module: String::from_utf8_lossy(info.module).into_owned(),
                 })
             })
             .collect()
@@ -393,6 +434,35 @@ impl ClapTestHost {
         if let Some(track_info) = handle.get_extension::<PluginTrackInfo>() {
             track_info.changed(&handle);
         }
+    }
+
+    /// Every rescan the plug-in has asked for since the last call, and
+    /// whether it said its remote-controls pages changed.
+    pub fn take_rescans(&mut self) -> (Vec<Rescan>, bool) {
+        self.instance
+            .access_handler(|m| (m.rescans.take(), m.remote_controls_changed.replace(false)))
+    }
+
+    /// The plug-in's remote-controls pages, in its order; empty if it has
+    /// none.
+    #[must_use]
+    pub fn remote_pages(&mut self) -> Vec<RemotePageInfo> {
+        let plugin = self.instance.plugin_handle();
+        let Some(remote) = plugin.get_extension::<PluginRemoteControls>() else {
+            return Vec::new();
+        };
+        let mut buffer = RemoteControlsPageBuffer::new();
+        (0..remote.count(&plugin))
+            .filter_map(|index| {
+                let page = remote.get(&plugin, index, &mut buffer)?;
+                Some(RemotePageInfo {
+                    id: page.page_id.get(),
+                    section: String::from_utf8_lossy(page.section_name).into_owned(),
+                    name: String::from_utf8_lossy(page.page_name).into_owned(),
+                    params: page.param_ids.map(|id| id.map(|id| id.get())),
+                })
+            })
+            .collect()
     }
 
     /// Calls the plug-in back on the main thread, as after it asked.
@@ -897,6 +967,7 @@ impl HostHandlers for TestHost {
         builder
             .register::<HostParams>()
             .register::<HostState>()
+            .register::<HostRemoteControls>()
             .register::<HostLatency>()
             .register::<HostTrackInfo>();
     }
@@ -938,12 +1009,23 @@ struct MainThread {
     /// The track name `track-info` reports, if any. Leaked, as clack's
     /// writer wants the name to live as long as the host's handler.
     track: Cell<Option<&'static [u8]>>,
+    /// The rescans asked for.
+    rescans: RefCell<Vec<Rescan>>,
+    /// Whether the remote-controls pages changed.
+    remote_controls_changed: Cell<bool>,
 }
 
 impl MainThreadHandler<'_> for MainThread {}
 
 impl HostParamsImplMainThread for MainThread {
-    fn rescan(&self, _flags: ParamRescanFlags) {}
+    fn rescan(&self, flags: ParamRescanFlags) {
+        self.rescans.borrow_mut().push(Rescan {
+            values: flags.contains(ParamRescanFlags::VALUES),
+            text: flags.contains(ParamRescanFlags::TEXT),
+            info: flags.contains(ParamRescanFlags::INFO),
+            all: flags.contains(ParamRescanFlags::ALL),
+        });
+    }
 
     fn clear(&self, _param_id: ClapId, _flags: ParamClearFlags) {}
 }
@@ -952,6 +1034,14 @@ impl HostStateImpl for MainThread {
     fn mark_dirty(&self) {
         self.dirty.set(true);
     }
+}
+
+impl HostRemoteControlsImpl for MainThread {
+    fn changed(&self) {
+        self.remote_controls_changed.set(true);
+    }
+
+    fn suggest_page(&self, _page_id: ClapId) {}
 }
 
 impl HostLatencyImpl for MainThread {

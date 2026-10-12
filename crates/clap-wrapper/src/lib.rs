@@ -32,7 +32,7 @@
 //! build would generate. The build script and this file are adapted from
 //! clap-wrapper-rs (MIT OR Apache-2.0).
 //!
-//! Two changes from upstream:
+//! Three changes from upstream:
 //!
 //! - `vst3sdk/base/source/hexbinary.h` is left out: unused, and its header
 //!   still carries the SDK's licence from before 3.8, not MIT.
@@ -41,6 +41,11 @@
 //!   processing passes the wrapper itself as the automation sink (`this`,
 //!   where upstream passes `nullptr`), so the plug-in's gestures from that
 //!   flush reach the host as edits instead of being dropped.
+//! - In the same file, a parameter rescan with CLAP's info flag also
+//!   refreshes each parameter's short title and hidden flag, not only its
+//!   title, so a slot whose module changes shows a VST3 host the
+//!   parameters it now uses (`restartComponent` with
+//!   `kParamTitlesChanged`, which covers flags).
 //!
 //! # Formats
 //!
@@ -48,8 +53,16 @@
 //!   CLAP's features to VST3's categories, parameters one to one (values
 //!   normalised over each parameter's CLAP range), the plug-in's gestures to
 //!   `IComponentHandler`'s `beginEdit`, `performEdit` and `endEdit` (from its
-//!   idle timer, on the main thread), and `mark_dirty` to
-//!   `IComponentHandler2::setDirty`.
+//!   idle timer, on the main thread), `mark_dirty` to
+//!   `IComponentHandler2::setDirty`, and a parameter rescan to
+//!   `restartComponent`: the values flag to `kParamValuesChanged`, the info
+//!   flag to `kParamValuesChanged | kParamTitlesChanged`, after refreshing
+//!   its own copy of each value, title and hidden flag. A CLAP module path
+//!   becomes a VST3 unit when the parameters are first set up.
+//! - **Audio Unit v2**: a parameter rescan of any kind re-reads every
+//!   parameter's info (name, and the readable and writable flags a hidden
+//!   parameter loses) and notifies `kAudioUnitProperty_ParameterList`,
+//!   `kAudioUnitProperty_ParameterInfo` and `kAudioUnitProperty_ClassInfo`.
 //! - **Audio Unit v2**: the type, subtype and manufacturer come from the
 //!   bundle's `Info.plist`, which `cargo xtask bundle` writes from the
 //!   plug-in's info; gestures become `AUEventListenerNotify` calls.

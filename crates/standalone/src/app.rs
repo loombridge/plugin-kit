@@ -166,7 +166,7 @@ impl<P: Plugin> Standalone<P> {
         let requests = Arc::new(Requests::default());
         let host = Host::new(Box::new(Backend(requests.clone())));
         let mut plugin = P::new(host.clone());
-        let values = Arc::new(ParamValues::new(plugin.params())?);
+        let values = Arc::new(ParamValues::for_plugin(&plugin)?);
         let edits = host.connect(values.clone());
         let (midi, midi_in) = midi::queue();
         let editor = plugin.editor();

@@ -1,11 +1,13 @@
 //! Every parameter's value now, shared by a plug-in's main thread and its
-//! audio thread.
+//! audio thread, and, for a plug-in with a [`ParamSpace`], what each
+//! parameter means now.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-use lspk_params::{ParamDescriptor, ParamId};
+use lspk_params::{ParamDescriptor, ParamId, ParamSpace, ParamView};
 
-use crate::PluginError;
+use crate::{Plugin, PluginError};
 
 /// The ID no parameter may have: CLAP's "no parameter".
 const INVALID_ID: u32 = u32::MAX;
@@ -22,6 +24,8 @@ pub struct ParamValues {
     values: Box<[AtomicU64]>,
     /// `(id, index)` sorted by ID.
     by_id: Box<[(ParamId, usize)]>,
+    /// The plug-in's parameter space, if it has one.
+    space: Option<Arc<ParamSpace>>,
 }
 
 impl ParamValues {
@@ -62,7 +66,102 @@ impl ParamValues {
             descriptors: descriptors.into_boxed_slice(),
             values,
             by_id: by_id.into_boxed_slice(),
+            space: None,
         })
+    }
+
+    /// The parameters `descriptors` describe, as [`new`](Self::new) makes
+    /// them, read through `space`, which must describe every one of them.
+    ///
+    /// # Errors
+    ///
+    /// As [`new`](Self::new), or a parameter of the space that isn't among
+    /// `descriptors`.
+    pub fn with_space(
+        descriptors: Vec<ParamDescriptor>,
+        space: Arc<ParamSpace>,
+    ) -> Result<Self, PluginError> {
+        let mut values = Self::new(descriptors)?;
+        if let Some(missing) = space
+            .descriptors()
+            .iter()
+            .find(|d| values.descriptor(d.id) != Some(*d))
+        {
+            return Err(PluginError::new(format!(
+                "the plug-in's parameters don't match its space at {} ({})",
+                missing.id.0, missing.name
+            )));
+        }
+        values.space = Some(space);
+        Ok(values)
+    }
+
+    /// Plug-in `plugin`'s parameters ([`Plugin::params`]), read through
+    /// its space if it has one ([`Plugin::param_space`]), each at its
+    /// default.
+    ///
+    /// # Errors
+    ///
+    /// As [`with_space`](Self::with_space).
+    pub fn for_plugin<P: Plugin>(plugin: &P) -> Result<Self, PluginError> {
+        match plugin.param_space() {
+            Some(space) => Self::with_space(plugin.params(), Arc::new(space)),
+            None => Self::new(plugin.params()),
+        }
+    }
+
+    /// The plug-in's parameter space, if it has one.
+    #[must_use]
+    pub fn space(&self) -> Option<&Arc<ParamSpace>> {
+        self.space.as_ref()
+    }
+
+    /// What parameter `id` is now: its real name, path and descriptor, and
+    /// whether it's hidden. Without a space, the descriptor as it is.
+    #[must_use]
+    pub fn view(&self, id: ParamId) -> Option<ParamView> {
+        match &self.space {
+            Some(space) => space.view(id, &|id| self.get(id)),
+            None => self.descriptor(id).map(ParamView::plain),
+        }
+    }
+
+    /// Every parameter's [view](Self::view), in order, hidden ones too.
+    #[must_use]
+    pub fn views(&self) -> Vec<ParamView> {
+        self.descriptors
+            .iter()
+            .filter_map(|d| self.view(d.id))
+            .collect()
+    }
+
+    /// The parameter `text` names: a path (`osc "A" / param "Level"`) or a
+    /// name as hosts show it, in any case; never a hidden one.
+    #[must_use]
+    pub fn find(&self, text: &str) -> Option<ParamId> {
+        match &self.space {
+            Some(space) => space.find(text, &|id| self.get(id)),
+            None => {
+                let path: Option<lspk_params::ParamPath> = text.trim().parse().ok();
+                self.descriptors
+                    .iter()
+                    .find(|d| match &path {
+                        Some(path) if path.module.is_none() => {
+                            d.name.eq_ignore_ascii_case(&path.param)
+                        }
+                        Some(_) => false,
+                        None => d.name.eq_ignore_ascii_case(text.trim()),
+                    })
+                    .map(|d| d.id)
+            }
+        }
+    }
+
+    /// Whether `id` is a slot's type parameter, whose change changes what
+    /// other parameters mean. Allocates nothing.
+    #[must_use]
+    pub fn is_selector(&self, id: ParamId) -> bool {
+        self.space.as_ref().is_some_and(|s| s.is_selector(id))
     }
 
     /// How many parameters there are.
