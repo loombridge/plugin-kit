@@ -5,8 +5,31 @@
 //! above the black keys (W, E, T, Y, U, O, P). Z and X move down and up an
 //! octave, C and V lower and raise the velocity. A key plays the note it
 //! started with until it's released, whatever changes in between.
+//!
+//! # When it plays
+//!
+//! The keyboard plays whenever the app's window has the focus, whether the
+//! window's own strip has it or the plug-in's editor inside it does, unless
+//! a text field is taking the keys or the person has switched it off. It
+//! releases its notes only when one of those stops it playing: the window
+//! loses the focus, a text field takes the keys, or it's switched off.
+//! [`KeyboardGate`] holds the rule.
+//!
+//! The focus passing between the strip and the editor reaches the app as
+//! two events, the one losing it and the one gaining it, from two threads
+//! on X11. So the window counts as having lost the focus only once neither
+//! part has had it for [`FOCUS_GRACE`]; a click on a knob moves the focus
+//! and the notes play on.
+
+use std::time::{Duration, Instant};
+
+use lspk_plugin::KeyboardFocus;
 
 use crate::engine::MidiMessage;
+
+/// How long neither part of the window may have the focus before the
+/// window counts as having lost it.
+pub const FOCUS_GRACE: Duration = Duration::from_millis(150);
 
 /// The lowest and highest octave shift, from the middle.
 const OCTAVES: (i8, i8) = (-3, 4);
@@ -155,9 +178,147 @@ impl ComputerKeyboard {
     }
 }
 
+/// Where the app's window stands with the keyboard: its own part, the
+/// strip, and the plug-in's editor inside it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowFocus {
+    /// The strip.
+    pub strip: KeyboardFocus,
+    /// The editor.
+    pub editor: KeyboardFocus,
+}
+
+impl WindowFocus {
+    /// Whether either part has the focus.
+    #[must_use]
+    pub fn focused(self) -> bool {
+        self.strip.focused || self.editor.focused
+    }
+
+    /// Whether a text field in a part with the focus is taking the keys.
+    #[must_use]
+    pub fn typing(self) -> bool {
+        (self.strip.focused && self.strip.typing) || (self.editor.focused && self.editor.typing)
+    }
+}
+
+/// Whether the computer keyboard plays now; see [When it
+/// plays](self#when-it-plays).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct KeyboardGate {
+    /// When neither part last had the focus, since it was lost.
+    lost: Option<Instant>,
+    open: bool,
+}
+
+impl KeyboardGate {
+    /// Takes where the window stands at `now`, and whether the person has
+    /// the keyboard switched `on`. Returns true if it just stopped
+    /// playing, when the held keys are to be released.
+    pub fn update(&mut self, now: Instant, on: bool, focus: WindowFocus) -> bool {
+        if focus.focused() {
+            self.lost = None;
+        } else if self.lost.is_none() {
+            self.lost = Some(now);
+        }
+        let away = self
+            .lost
+            .is_some_and(|lost| now.saturating_duration_since(lost) >= FOCUS_GRACE);
+        let open = on && !away && !focus.typing();
+        let closed = self.open && !open;
+        self.open = open;
+        closed
+    }
+
+    /// Whether the keyboard plays now.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.open
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const FOCUSED: KeyboardFocus = KeyboardFocus {
+        focused: true,
+        typing: false,
+    };
+    const TYPING: KeyboardFocus = KeyboardFocus {
+        focused: true,
+        typing: true,
+    };
+    const AWAY: KeyboardFocus = KeyboardFocus {
+        focused: false,
+        typing: false,
+    };
+
+    fn focus(strip: KeyboardFocus, editor: KeyboardFocus) -> WindowFocus {
+        WindowFocus { strip, editor }
+    }
+
+    #[test]
+    fn it_plays_while_either_part_of_the_window_has_the_focus() {
+        let start = Instant::now();
+        let mut gate = KeyboardGate::default();
+        assert!(!gate.update(start, true, focus(FOCUSED, AWAY)));
+        assert!(gate.is_open());
+        // A click on a knob: the strip loses the focus, then the editor
+        // gains it, a frame later. Nothing is released.
+        assert!(!gate.update(start + FOCUS_GRACE / 3, true, focus(AWAY, AWAY)));
+        assert!(gate.is_open());
+        assert!(!gate.update(start + FOCUS_GRACE / 2, true, focus(AWAY, FOCUSED)));
+        assert!(gate.is_open());
+        // And back.
+        assert!(!gate.update(start + FOCUS_GRACE, true, focus(FOCUSED, AWAY)));
+        assert!(gate.is_open());
+    }
+
+    #[test]
+    fn losing_the_focus_releases_the_notes() {
+        let start = Instant::now();
+        let mut gate = KeyboardGate::default();
+        gate.update(start, true, focus(AWAY, FOCUSED));
+        assert!(!gate.update(start, true, focus(AWAY, AWAY)));
+        assert!(!gate.update(start + FOCUS_GRACE / 2, true, focus(AWAY, AWAY)));
+        assert!(gate.update(start + FOCUS_GRACE, true, focus(AWAY, AWAY)));
+        assert!(!gate.is_open());
+        assert!(!gate.update(start + FOCUS_GRACE * 2, true, focus(AWAY, AWAY)));
+        // The focus comes back.
+        assert!(!gate.update(start + FOCUS_GRACE * 3, true, focus(FOCUSED, AWAY)));
+        assert!(gate.is_open());
+    }
+
+    #[test]
+    fn a_text_field_taking_the_keys_releases_them_at_once() {
+        let now = Instant::now();
+        let mut gate = KeyboardGate::default();
+        gate.update(now, true, focus(AWAY, FOCUSED));
+        assert!(gate.update(now, true, focus(AWAY, TYPING)));
+        assert!(!gate.is_open());
+        assert!(!gate.update(now, true, focus(AWAY, FOCUSED)));
+        assert!(gate.is_open());
+        assert!(gate.update(now, true, focus(TYPING, AWAY)));
+        // A part without the focus types nothing, whatever it last said.
+        let stale = KeyboardFocus {
+            focused: false,
+            typing: true,
+        };
+        assert!(!gate.update(now, true, focus(FOCUSED, stale)));
+        assert!(gate.is_open());
+    }
+
+    #[test]
+    fn switching_it_off_releases_the_notes() {
+        let now = Instant::now();
+        let mut gate = KeyboardGate::default();
+        gate.update(now, true, focus(FOCUSED, AWAY));
+        assert!(gate.update(now, false, focus(FOCUSED, AWAY)));
+        assert!(!gate.is_open());
+        assert!(!gate.update(now, true, focus(FOCUSED, AWAY)));
+        assert!(gate.is_open());
+    }
 
     #[test]
     fn the_home_row_plays_white_keys_from_middle_c() {

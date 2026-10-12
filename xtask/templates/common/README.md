@@ -58,7 +58,7 @@ It's built on the [plug-in kit](https://github.com/loombridge/plugin-kit), Loomb
 
    CI counts each benchmark's instructions on Linux and fails a pull request that makes any of them more than 3 % slower than `bench/baseline.json`; [AGENTS.md](AGENTS.md) explains how to update the baseline.
 
-1. Run it with no DAW at all: its standalone app plays through the default audio devices (choose others in its window) and keeps its settings and state between runs. Without a window, `--run-for <seconds>` plays and reports what it played, and `--list-devices` lists the devices:
+1. Run it with no DAW at all: its standalone app plays through the default audio devices (choose others in its Settings dialog) and keeps its settings and state between runs. Without a window, `--run-for <seconds>` plays and reports what it played, and `--list-devices` lists the devices:
 
    ```sh
    cargo run --release --bin {{crate}}-standalone -- --run-for 2

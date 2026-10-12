@@ -84,7 +84,7 @@ Three example plug-ins under `examples/`, never published, show the `Plugin` tra
    cargo run -p lspk-ui --example editor_host -- target/bundle/lspk-example-gain.clap
    ```
 
-1. To run a plug-in with no DAW at all, open its standalone app. It plays through the default audio devices (choose others, the sample rate and the buffer size in its window), takes every MIDI input and, for an instrument, the computer keyboard, and keeps its settings and the plug-in's state between runs. Without a window, `--run-for <seconds>` plays and reports what it played (`--note <key>` holds a note), and `--list-devices` lists the devices:
+1. To run a plug-in with no DAW at all, open its standalone app. It opens as one window, the plug-in's editor above a thin strip with the audio status, a level meter and the computer keyboard's controls. It plays through the default audio devices (choose others, the sample rate and the buffer size in its Settings dialog, from the menu bar, or from the strip on Linux), takes every MIDI input and, for an instrument, the computer keyboard whenever its window has the focus, and keeps its settings and the plug-in's state between runs. Without a window, `--run-for <seconds>` plays and reports what it played (`--note <key>` holds a note), and `--list-devices` lists the devices:
 
    ```sh
    open target/bundle/lspk-example-sine.app

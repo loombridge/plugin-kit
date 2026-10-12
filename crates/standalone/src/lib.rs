@@ -25,8 +25,19 @@
 //! - **MIDI:** every connected MIDI input plays the plug-in, and inputs
 //!   plugged in later are picked up ([`midi`]); for an instrument, so does
 //!   the computer keyboard ([`keyboard`]).
-//! - **A window:** the plug-in's editor when it has one, beside the device
-//!   settings; otherwise the device settings and the plug-in's parameters.
+//! - **One window:** the plug-in's editor fills it, embedded as a host
+//!   embeds one (the kit's generic editor for a plug-in without one), and
+//!   follows its size; a thin strip along the bottom shows where the audio
+//!   stands, the output's level and, for an instrument, the computer
+//!   keyboard's switch, octave and velocity. The computer keyboard plays
+//!   whenever the window has the focus, the editor's part included, unless
+//!   a text field is taking the keys ([`keyboard`]).
+//! - **Menus and settings:** the menu bar (the app's on macOS, the
+//!   window's on Windows) opens and saves state files and opens the
+//!   Settings dialog, which chooses the devices, the sample rate and the
+//!   buffer size and lists the MIDI inputs. Linux has no menu bar without
+//!   GTK, so there the strip has a Settings button and the dialog holds
+//!   the state files.
 //! - **Files:** it keeps its settings and the plug-in's state between runs
 //!   ([`settings`]), and opens and saves the plug-in's state as a file, in
 //!   the kit's state format, the same bytes a host saves.
@@ -49,6 +60,16 @@ pub mod settings;
 
 mod app;
 mod cpal_backend;
+mod layout;
+#[cfg_attr(
+    not(any(target_os = "macos", windows)),
+    allow(
+        dead_code,
+        reason = "Linux has no menu bar; only the tests read it there"
+    )
+)]
+mod menu;
+mod settings_window;
 mod window;
 
 pub use app::{Standalone, Status};

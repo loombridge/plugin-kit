@@ -4,14 +4,15 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::{Duration, Instant};
 
 use lspk_plugin::editor::{EditorChanges, EditorHost};
 use lspk_plugin::host::Edit;
 use lspk_plugin::{
-    Editor, EditorContext, EditorSize, Host, HostBackend, ParamValues, Plugin, PluginError,
-    ProcessConfig, WindowApi, state,
+    Editor, EditorContext, EditorKey, EditorSize, Host, HostBackend, KeyboardFocus, ParamValues,
+    ParentWindow, Plugin, PluginError, ProcessConfig, state,
 };
 use rtrb::Consumer;
 
@@ -35,24 +36,48 @@ struct Requests {
     dirty: AtomicBool,
     editor_callback: AtomicBool,
     editor_closed: AtomicBool,
+    /// The size the editor last asked for, width in the high half and
+    /// height in the low; 0 for none.
+    editor_resize: AtomicU64,
+    editor_focused: AtomicBool,
+    editor_typing: AtomicBool,
 }
 
 /// The standalone app as the host of the plug-in's editor, from whichever
 /// thread its window runs on.
-struct EditorBackend(Arc<Requests>);
+struct EditorBackend {
+    requests: Arc<Requests>,
+    keys: Sender<EditorKey>,
+}
 
 impl EditorHost for EditorBackend {
     fn request_callback(&self) {
-        self.0.editor_callback.store(true, Ordering::Release);
+        self.requests.editor_callback.store(true, Ordering::Release);
     }
 
-    fn request_resize(&self, _size: EditorSize) -> bool {
-        // The editor's window is its own, and resizes itself.
+    fn request_resize(&self, size: EditorSize) -> bool {
+        // The app's window follows the editor, at its next frame.
+        let packed = (u64::from(size.width) << 32) | u64::from(size.height);
+        self.requests.editor_resize.store(packed, Ordering::Release);
         true
     }
 
     fn closed(&self) {
-        self.0.editor_closed.store(true, Ordering::Release);
+        self.requests.editor_closed.store(true, Ordering::Release);
+    }
+
+    fn key(&self, key: EditorKey) {
+        // The receiver lives as long as the app.
+        let _ = self.keys.send(key);
+    }
+
+    fn keyboard_focus(&self, focus: KeyboardFocus) {
+        self.requests
+            .editor_typing
+            .store(focus.typing, Ordering::Release);
+        self.requests
+            .editor_focused
+            .store(focus.focused, Ordering::Release);
     }
 }
 
@@ -140,9 +165,13 @@ pub struct Standalone<P: Plugin> {
     retry_at: Option<Instant>,
     stall: Duration,
     retry: Duration,
-    /// The plug-in's editor, if it has one, and whether its window is open.
+    /// The plug-in's editor, if it has one (or the generic one, once
+    /// embedded), and whether its window is open.
     editor: Option<Box<dyn Editor>>,
+    has_own_editor: bool,
     editor_open: bool,
+    /// The keys the editor passed on, in order.
+    editor_keys: Receiver<EditorKey>,
     /// The link the editor, or the app's own parameter view, edits through.
     view: EditorContext,
     changes: EditorChanges,
@@ -170,8 +199,14 @@ impl<P: Plugin> Standalone<P> {
         let edits = host.connect(values.clone());
         let (midi, midi_in) = midi::queue();
         let editor = plugin.editor();
-        let (view, changes) =
-            EditorContext::new(values.clone(), Box::new(EditorBackend(requests.clone())));
+        let (keys, editor_keys) = channel();
+        let (view, changes) = EditorContext::new(
+            values.clone(),
+            Box::new(EditorBackend {
+                requests: requests.clone(),
+                keys,
+            }),
+        );
         Ok(Self {
             plugin,
             host,
@@ -188,8 +223,10 @@ impl<P: Plugin> Standalone<P> {
             retry_at: None,
             stall: STALL,
             retry: RETRY,
+            has_own_editor: editor.is_some(),
             editor,
             editor_open: false,
+            editor_keys,
             view,
             changes,
             saved: None,
@@ -281,47 +318,56 @@ impl<P: Plugin> Standalone<P> {
         P::INFO.notes.input
     }
 
-    /// Whether the plug-in has an editor.
+    /// Whether the plug-in has an editor of its own. One without gets the
+    /// kit's generic editor in the window.
     #[must_use]
     pub fn has_editor(&self) -> bool {
-        self.editor.is_some()
+        self.has_own_editor
     }
 
-    /// Whether the plug-in's editor is open.
+    /// Whether the editor is open.
     #[must_use]
     pub fn editor_is_open(&self) -> bool {
         self.editor_open
     }
 
-    /// Opens the plug-in's editor in a window of its own, as a host opens a
-    /// floating editor.
+    /// Opens the plug-in's editor inside `parent`, the app's window, and
+    /// shows it; a plug-in without an editor gets the kit's generic one.
+    /// `scale` is the window's scale factor, which the editor takes where
+    /// sizes are pixels (Windows and X11). Returns the editor's size.
     ///
     /// # Errors
     ///
-    /// The plug-in has no editor, or its window couldn't open.
-    pub fn open_editor(&mut self) -> Result<(), String> {
+    /// The editor can't open inside `parent`, or its window didn't.
+    pub fn embed_editor(&mut self, parent: ParentWindow, scale: f64) -> Result<EditorSize, String> {
+        let api = parent.api();
         if self.editor_open {
-            return Ok(());
+            self.close_editor();
         }
-        let editor = self.editor.as_mut().ok_or("the plug-in has no editor")?;
-        let api = WindowApi::native().ok_or("this platform has no window system the kit knows")?;
-        if !editor.supports(api, true) {
-            return Err("the editor can't open in a window of its own".to_owned());
+        let values = &self.values;
+        let editor = self.editor.get_or_insert_with(|| {
+            Box::new(lspk_ui::generic_editor(P::INFO.name, values.descriptors()))
+        });
+        if !editor.supports(api, false) {
+            return Err("the editor can't open inside the app's window".to_owned());
         }
         self.requests.editor_closed.store(false, Ordering::Release);
+        self.requests.editor_resize.store(0, Ordering::Release);
         editor
-            .create(api, true, self.view.clone())
+            .create(api, false, self.view.clone())
             .map_err(|e| e.to_string())?;
-        editor.set_title(P::INFO.name);
-        if let Err(error) = editor.show() {
+        if !api.uses_logical_size() {
+            editor.set_scale(scale);
+        }
+        if let Err(error) = editor.set_parent(parent).and_then(|()| editor.show()) {
             editor.destroy();
             return Err(error.to_string());
         }
         self.editor_open = true;
-        Ok(())
+        Ok(editor.size())
     }
 
-    /// Closes the plug-in's editor window, if it's open.
+    /// Closes the editor's window, if it's open.
     pub fn close_editor(&mut self) {
         if self.editor_open
             && let Some(editor) = &mut self.editor
@@ -329,6 +375,77 @@ impl<P: Plugin> Standalone<P> {
             editor.destroy();
         }
         self.editor_open = false;
+        self.requests.editor_focused.store(false, Ordering::Release);
+        self.requests.editor_typing.store(false, Ordering::Release);
+    }
+
+    /// The open editor's size, in its window system's units.
+    #[must_use]
+    pub fn editor_size(&self) -> Option<EditorSize> {
+        self.editor
+            .as_ref()
+            .filter(|_| self.editor_open)
+            .map(|editor| editor.size())
+    }
+
+    /// Whether the open editor can be resized.
+    #[must_use]
+    pub fn editor_resizable(&self) -> bool {
+        self.editor
+            .as_ref()
+            .filter(|_| self.editor_open)
+            .and_then(|editor| editor.resize_hints())
+            .is_some_and(|hints| hints.horizontal || hints.vertical)
+    }
+
+    /// Resizes the open editor to the size nearest `size` it can take, as
+    /// when the person resizes the window; returns the size it has after.
+    pub fn fit_editor(&mut self, size: EditorSize) -> Option<EditorSize> {
+        let editor = self.editor.as_mut().filter(|_| self.editor_open)?;
+        if editor.resize_hints().is_some() {
+            let adjusted = editor.adjust_size(size);
+            if adjusted != editor.size() {
+                editor.set_size(adjusted);
+            }
+        }
+        Some(editor.size())
+    }
+
+    /// Tells the open editor the window's scale factor changed, where
+    /// sizes are pixels (Windows and X11).
+    pub fn set_editor_scale(&mut self, scale: f64) {
+        if let Some(editor) = self.editor.as_mut().filter(|_| self.editor_open)
+            && lspk_plugin::WindowApi::native().is_some_and(|api| !api.uses_logical_size())
+        {
+            editor.set_scale(scale);
+        }
+    }
+
+    /// The size the editor last asked its window to take, if it has asked
+    /// since this was last called.
+    #[must_use]
+    pub fn take_editor_resize(&self) -> Option<EditorSize> {
+        let packed = self.requests.editor_resize.swap(0, Ordering::AcqRel);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "each half holds a 32-bit size"
+        )]
+        (packed != 0).then(|| EditorSize::new((packed >> 32) as u32, packed as u32))
+    }
+
+    /// Where the editor stands with the keyboard now.
+    #[must_use]
+    pub fn editor_focus(&self) -> KeyboardFocus {
+        KeyboardFocus {
+            focused: self.editor_open && self.requests.editor_focused.load(Ordering::Acquire),
+            typing: self.requests.editor_typing.load(Ordering::Acquire),
+        }
+    }
+
+    /// The keys the editor has passed on since this was last called, in
+    /// order.
+    pub fn take_editor_keys(&self) -> Vec<EditorKey> {
+        self.editor_keys.try_iter().collect()
     }
 
     /// The link a window draws the plug-in's parameters through: every

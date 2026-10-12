@@ -40,6 +40,15 @@
 //! thread on macOS and Windows, a thread of its own on X11). Every
 //! parameter change goes to the host as a gesture, so it records automation
 //! and undo exactly as for a person moving a control in its own interface.
+//!
+//! # The keyboard
+//!
+//! An editor also tells its host where it stands with the keyboard
+//! ([`EditorContext::set_keyboard_focus`]) and passes on the keys nothing
+//! in it used ([`EditorContext::key`]), so a host that plays notes from the
+//! computer keyboard, as the standalone app does, keeps playing while the
+//! editor has the focus. Plug-in formats have no such route, and their
+//! adapters ignore both.
 
 use std::collections::VecDeque;
 use std::ffi::c_void;
@@ -129,6 +138,27 @@ impl EditorSize {
     pub const fn new(width: u32, height: u32) -> Self {
         Self { width, height }
     }
+}
+
+/// Where an editor's window stands with the keyboard.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyboardFocus {
+    /// The window has the keyboard focus.
+    pub focused: bool,
+    /// A control in it is taking the keys, such as a text field being
+    /// edited.
+    pub typing: bool,
+}
+
+/// A key a person pressed or released in an editor's window that nothing
+/// in it used, with no Command, Control or Alt held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditorKey {
+    /// The character the key types on a US layout, in lower case: a letter
+    /// from `a` to `z`, a digit, or one of `` ;',./[]-=` ``.
+    pub key: char,
+    /// Whether it went down (or up).
+    pub pressed: bool,
 }
 
 /// How a host may resize an editor's window.
@@ -232,6 +262,17 @@ pub trait EditorHost: Send + Sync + 'static {
     /// so the host destroys the editor. Called on the main thread, never
     /// from inside a call into the editor.
     fn closed(&self) {}
+
+    /// A key nothing in the editor's window used, from the window's thread.
+    fn key(&self, key: EditorKey) {
+        let _ = key;
+    }
+
+    /// Where the editor's window stands with the keyboard now, from the
+    /// window's thread, each time it changes.
+    fn keyboard_focus(&self, focus: KeyboardFocus) {
+        let _ = focus;
+    }
 }
 
 /// One change an editor makes to a parameter, on its way to the main
@@ -368,6 +409,22 @@ impl EditorContext {
         }
     }
 
+    /// Passes on a key nothing in the window used.
+    pub fn key(&self, key: EditorKey) {
+        if !self.is_closed() {
+            self.inner.host.key(key);
+        }
+    }
+
+    /// Tells the host where the window stands with the keyboard; call it
+    /// each time that changes, and with the default (no focus) as the
+    /// window closes.
+    pub fn set_keyboard_focus(&self, focus: KeyboardFocus) {
+        if !self.is_closed() {
+            self.inner.host.keyboard_focus(focus);
+        }
+    }
+
     /// Asks the host to call [`Editor::on_main_thread`] soon.
     pub fn request_callback(&self) {
         if !self.is_closed() {
@@ -474,6 +531,8 @@ mod tests {
     struct Calls {
         callbacks: AtomicU32,
         resizes: AtomicU32,
+        keys: std::sync::Mutex<Vec<EditorKey>>,
+        focus: std::sync::Mutex<Vec<KeyboardFocus>>,
     }
 
     struct Recorder(Arc<Calls>);
@@ -486,6 +545,14 @@ mod tests {
         fn request_resize(&self, _size: EditorSize) -> bool {
             self.0.resizes.fetch_add(1, Ordering::Relaxed);
             true
+        }
+
+        fn key(&self, key: EditorKey) {
+            self.0.keys.lock().expect("not poisoned").push(key);
+        }
+
+        fn keyboard_focus(&self, focus: KeyboardFocus) {
+            self.0.focus.lock().expect("not poisoned").push(focus);
         }
     }
 
@@ -595,6 +662,27 @@ mod tests {
         assert!(changes.is_empty());
         assert_eq!(calls.callbacks.load(Ordering::Relaxed), 0);
         assert_eq!(calls.resizes.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn keys_and_focus_reach_the_host_until_the_link_closes() {
+        let calls = Arc::new(Calls::default());
+        let (cx, _changes) = EditorContext::new(values(), Box::new(Recorder(calls.clone())));
+        let typing = KeyboardFocus {
+            focused: true,
+            typing: true,
+        };
+        let a = EditorKey {
+            key: 'a',
+            pressed: true,
+        };
+        cx.set_keyboard_focus(typing);
+        cx.key(a);
+        cx.close();
+        cx.key(a);
+        cx.set_keyboard_focus(KeyboardFocus::default());
+        assert_eq!(*calls.keys.lock().expect("not poisoned"), [a]);
+        assert_eq!(*calls.focus.lock().expect("not poisoned"), [typing]);
     }
 
     #[test]

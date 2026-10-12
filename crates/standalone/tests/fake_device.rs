@@ -458,8 +458,11 @@ fn the_plugin_asks_for_callbacks_and_restarts() {
 }
 
 #[test]
-fn the_editor_opens_floating_and_its_changes_reach_the_processor() {
-    use lspk_plugin::{Editor, EditorContext, EditorSize, ParentWindow, ResizeHints, WindowApi};
+fn the_editor_opens_in_the_apps_window_and_its_changes_reach_the_processor() {
+    use lspk_plugin::{
+        Editor, EditorContext, EditorKey, EditorSize, KeyboardFocus, ParentWindow, ResizeHints,
+        WindowApi,
+    };
 
     thread_local! {
         static CONTEXT: RefCell<Option<EditorContext>> = const { RefCell::new(None) };
@@ -471,7 +474,7 @@ fn the_editor_opens_floating_and_its_changes_reach_the_processor() {
     struct Window;
     impl Editor for Window {
         fn supports(&self, api: WindowApi, floating: bool) -> bool {
-            Some(api) == WindowApi::native() && floating
+            api == WindowApi::X11 && !floating
         }
         fn create(&mut self, _: WindowApi, _: bool, cx: EditorContext) -> Result<(), PluginError> {
             call("create");
@@ -488,16 +491,23 @@ fn the_editor_opens_floating_and_its_changes_reach_the_processor() {
             EditorSize::new(100, 100)
         }
         fn resize_hints(&self) -> Option<ResizeHints> {
-            None
+            Some(ResizeHints {
+                horizontal: true,
+                vertical: true,
+                aspect_ratio: None,
+            })
         }
         fn adjust_size(&self, size: EditorSize) -> EditorSize {
-            size
+            EditorSize::new(size.width.max(50), size.height.max(50))
         }
         fn set_size(&mut self, _: EditorSize) -> bool {
-            false
+            call("set_size");
+            true
         }
-        fn set_parent(&mut self, _: ParentWindow) -> Result<(), PluginError> {
-            Err(PluginError::new("floating only"))
+        fn set_parent(&mut self, parent: ParentWindow) -> Result<(), PluginError> {
+            assert_eq!(parent, ParentWindow::X11(7));
+            call("set_parent");
+            Ok(())
         }
         fn show(&mut self) -> Result<(), PluginError> {
             call("show");
@@ -541,8 +551,44 @@ fn the_editor_opens_floating_and_its_changes_reach_the_processor() {
     let mut app = app::<Edited>(&fake, Settings::default());
     assert!(app.has_editor() && !app.editor_is_open());
     app.start();
-    app.open_editor().expect("a floating window");
+    let size = app
+        .embed_editor(ParentWindow::X11(7), 1.0)
+        .expect("an embedded window");
+    assert_eq!(size, EditorSize::new(100, 100));
     assert!(app.editor_is_open());
+
+    // The editor asks for a size, has the focus, and passes on a key.
+    let cx = CONTEXT.with(|c| c.borrow().clone()).expect("a context");
+    std::thread::spawn(move || {
+        assert!(cx.request_resize(EditorSize::new(300, 200)));
+        cx.set_keyboard_focus(KeyboardFocus {
+            focused: true,
+            typing: false,
+        });
+        cx.key(EditorKey {
+            key: 'a',
+            pressed: true,
+        });
+    })
+    .join()
+    .expect("the window's thread");
+    assert_eq!(app.take_editor_resize(), Some(EditorSize::new(300, 200)));
+    assert_eq!(app.take_editor_resize(), None);
+    assert!(app.editor_focus().focused && !app.editor_focus().typing);
+    assert_eq!(
+        app.take_editor_keys(),
+        [EditorKey {
+            key: 'a',
+            pressed: true
+        }]
+    );
+    // The person resizes the window: the editor takes what it can.
+    assert!(app.editor_resizable());
+    assert_eq!(
+        app.fit_editor(EditorSize::new(20, 400)),
+        Some(EditorSize::new(100, 100)),
+        "this editor reports one size whatever it's given"
+    );
 
     // A drag in the editor's window, as on X11 from its own thread.
     let cx = CONTEXT.with(|c| c.borrow().clone()).expect("a context");
@@ -565,8 +611,16 @@ fn the_editor_opens_floating_and_its_changes_reach_the_processor() {
         .window_closed();
     app.poll();
     assert!(!app.editor_is_open());
+    assert!(!app.editor_focus().focused, "a closed editor has no focus");
     assert_eq!(
         CALLS.with(|c| c.borrow().clone()),
-        ["create", "show", "callback", "destroy"]
+        [
+            "create",
+            "set_parent",
+            "show",
+            "set_size",
+            "callback",
+            "destroy"
+        ]
     );
 }

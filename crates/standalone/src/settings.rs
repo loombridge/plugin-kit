@@ -37,6 +37,8 @@ pub struct Settings {
     pub keyboard_octave: i8,
     /// The computer keyboard's velocity; 0 for the default.
     pub keyboard_velocity: u8,
+    /// Whether the person has switched the computer keyboard off.
+    pub keyboard_off: bool,
 }
 
 /// The app's folder for the plug-in with ID `id`, or `None` if the
@@ -113,6 +115,7 @@ mod tests {
             output: Some("fake:out".into()),
             sample_rate: Some(96_000),
             keyboard_octave: -1,
+            keyboard_off: true,
             ..Settings::default()
         };
         settings.save(&dir).expect("saved");
