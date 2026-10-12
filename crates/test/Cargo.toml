@@ -33,6 +33,7 @@ clack-extensions = { version = "=0.2.0", optional = true, features = [
     "latency",
     "note-ports",
     "params",
+    "remote-controls",
     "state",
     "tail",
     "track-info",

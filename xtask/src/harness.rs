@@ -10,7 +10,11 @@ use lspk_test::validate::{Format, Validator, clap_bundle};
 use crate::formats;
 
 /// The plug-in crates `cargo xtask validate` checks when none are named.
-pub const EXAMPLES: &[&str] = &["lspk-example-gain", "lspk-example-sine"];
+pub const EXAMPLES: &[&str] = &[
+    "lspk-example-gain",
+    "lspk-example-modular",
+    "lspk-example-sine",
+];
 
 /// Runs every crate's golden suite (its `golden` test target, by
 /// convention `tests/golden.rs`). With `--update`, the suites first remake
