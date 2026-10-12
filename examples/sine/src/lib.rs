@@ -10,9 +10,11 @@
 //! glides to each new value over 20 ms. The instrument sleeps while no
 //! voice sounds.
 //!
-//! It's exported with the agent interface ([`lspk_plugin_agent::WithAgent`]),
+//! It's exported with the agent interface (`lspk_plugin_agent::WithAgent`),
 //! so an agent can drive it in any host once the person switches its agent
-//! server on.
+//! server on. Without the `export` feature (on by default) the crate is the
+//! plug-in's types alone, for a host that compiles it in, as Beatlayer's
+//! native devices do.
 
 use std::f64::consts::TAU;
 
@@ -105,6 +107,7 @@ impl Plugin for Sine {
         ))
     }
 
+    #[cfg(feature = "export")]
     fn editor(&mut self) -> Option<Box<dyn lspk_plugin::Editor>> {
         Some(Box::new(lspk_ui::generic_editor(NAME, &params())))
     }
@@ -367,4 +370,5 @@ impl Processor for SineProcessor {
     }
 }
 
+#[cfg(feature = "export")]
 lspk_plugin::export_clap!(lspk_plugin_agent::WithAgent<Sine>);

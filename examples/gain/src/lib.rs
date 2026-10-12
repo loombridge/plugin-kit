@@ -6,9 +6,11 @@
 //! over 20 ms so a change never clicks. The processor sleeps while its input
 //! is silent. One command of its own, [`RESET`], puts the gain back to 0 dB.
 //!
-//! It's exported with the agent interface ([`lspk_plugin_agent::WithAgent`]),
+//! It's exported with the agent interface (`lspk_plugin_agent::WithAgent`),
 //! so an agent can drive it in any host once the person switches its agent
-//! server on.
+//! server on. Without the `export` feature (on by default) the crate is the
+//! plug-in's types alone, for a host that compiles it in, as Beatlayer's
+//! native devices do.
 
 use lspk_commands::{CommandSpec, Context, NoArgs, Permission};
 use lspk_params::smooth::DEFAULT_SMOOTHING_SECONDS;
@@ -105,6 +107,7 @@ impl Plugin for Gain {
         }
     }
 
+    #[cfg(feature = "export")]
     fn editor(&mut self) -> Option<Box<dyn lspk_plugin::Editor>> {
         Some(Box::new(lspk_ui::generic_editor(NAME, &params())))
     }
@@ -192,4 +195,5 @@ impl Processor for GainProcessor {
     }
 }
 
+#[cfg(feature = "export")]
 lspk_plugin::export_clap!(lspk_plugin_agent::WithAgent<Gain>);

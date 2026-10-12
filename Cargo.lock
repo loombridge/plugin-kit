@@ -1368,8 +1368,11 @@ dependencies = [
 name = "lspk-plugin"
 version = "0.0.0"
 dependencies = [
+ "clack-common",
  "clack-extensions",
+ "clack-host",
  "clack-plugin",
+ "clap-sys",
  "lspk-clap-wrapper",
  "lspk-commands",
  "lspk-params",

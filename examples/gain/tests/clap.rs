@@ -150,3 +150,73 @@ fn processing_stays_off_the_heap() {
         host.process(FRAMES, Some(&input), &events);
     }
 }
+
+// The agent-commands extension: the host lists the plug-in's commands with
+// their schemas, descriptions and permission classes, runs one on the main
+// thread and gets its result, and hears its parameter change as a gesture.
+#[test]
+fn a_host_lists_and_runs_its_commands_through_the_extension() {
+    use lspk_test::clap::PluginEvent;
+    use serde_json::json;
+
+    let mut host =
+        ClapTestHost::from_entry(&lspk_example_gain::clap_entry, ID).expect("the plug-in");
+    let commands = host.commands().expect("the extension");
+    let ids: Vec<&str> = commands.iter().map(|c| c.id.as_ref()).collect();
+    for id in ["gain.reset", "params.get", "params.set", "agent.set_server"] {
+        assert!(ids.contains(&id), "{id} in {ids:?}");
+    }
+    let reset = commands.iter().find(|c| c.id == "gain.reset").unwrap();
+    assert_eq!(reset.label, "Reset Gain");
+    assert!(reset.description.starts_with("Puts the gain back to 0 dB"));
+    assert_eq!(reset.permission, Some(lspk_commands::Permission::Edit));
+    assert!(reset.args.is_some() && reset.result.is_some());
+    let get = commands.iter().find(|c| c.id == "params.get").unwrap();
+    assert_eq!(get.permission, Some(lspk_commands::Permission::Read));
+
+    // Turned down by the host, then put back by the command.
+    let quiet = host.parse(GAIN.0, "-12 dB").expect("a value");
+    host.flush(&[HostEvent::Param {
+        time: 0,
+        id: GAIN.0,
+        value: quiet,
+    }]);
+    host.take_requests();
+    assert_eq!(host.run_command("gain.reset", &json!({})), Ok(json!(null)));
+    // The plug-in's own value changed at once, and it asked for a flush, in
+    // which the host hears the change as a person's gesture.
+    let unity = host.parse(GAIN.0, "0 dB").expect("a value");
+    assert_eq!(host.value(GAIN.0), Some(unity));
+    let requests = host.take_requests();
+    assert!(requests.flush && requests.dirty, "{requests:?}");
+    assert_eq!(
+        host.flush(&[]),
+        [
+            PluginEvent::GestureBegin {
+                time: 0,
+                id: GAIN.0
+            },
+            PluginEvent::Param {
+                time: 0,
+                id: GAIN.0,
+                value: unity
+            },
+            PluginEvent::GestureEnd {
+                time: 0,
+                id: GAIN.0
+            },
+        ]
+    );
+
+    // A result comes back as JSON; a failure says why.
+    let got = host
+        .run_command("params.get", &json!({ "params": ["Gain"] }))
+        .expect("a result");
+    assert_eq!(got["params"][0]["text"], "0.00 dB");
+    let unknown = host.run_command("gain.boost", &json!({})).unwrap_err();
+    assert!(unknown.contains("no command `gain.boost`"), "{unknown}");
+    let wrong = host
+        .run_command("gain.reset", &json!({ "to": 3 }))
+        .unwrap_err();
+    assert!(wrong.contains("schema"), "{wrong}");
+}
