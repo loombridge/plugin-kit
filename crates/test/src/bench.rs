@@ -402,7 +402,12 @@ impl Scenario {
     /// Runs `kind`'s measured region once.
     fn count(&self, kind: Kind) -> Result<(), String> {
         match kind {
+            // Creation and loading are small, and mostly the allocator's
+            // work, so each runs once uncounted first: the count is then of
+            // the allocator's warm path, which doesn't change with the
+            // heap's state or the machine.
             Kind::Create => {
+                drop((self.make)(self.settings)?);
                 let mut made = None;
                 measured(&mut || made = Some((self.make)(self.settings)));
                 made.unwrap_or_else(|| Err("not made".to_owned())).map(drop)
@@ -410,6 +415,7 @@ impl Scenario {
             Kind::LoadState => {
                 let mut instance = (self.make)(self.settings)?;
                 let state = self.state.clone().unwrap_or_else(|| instance.save_state());
+                instance.load_state(&state)?;
                 let mut loaded = Ok(());
                 measured(&mut || loaded = instance.load_state(&state));
                 loaded
