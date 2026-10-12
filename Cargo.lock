@@ -1252,6 +1252,12 @@ dependencies = [
 [[package]]
 name = "lspk-voice"
 version = "0.0.0"
+dependencies = [
+ "lspk-dsp",
+ "lspk-plugin",
+ "lspk-rt",
+ "lspk-test",
+]
 
 [[package]]
 name = "lspk-wavetable"
