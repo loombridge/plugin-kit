@@ -135,11 +135,20 @@ fn zoom_button(ui: &mut Ui, theme: &Theme, rect: Rect, glyph: &str, name: &str) 
 }
 
 /// Every parameter's control, in a grid of as many columns as fit the
-/// width.
+/// width; a slot's reserved parameters its current module doesn't use are
+/// left out.
 pub fn param_grid(ui: &mut Ui, editor: &mut EditorUi<'_>) {
     let theme = editor.theme;
     let s = &theme.sizes;
-    let count = editor.cx.values().len();
+    let values = editor.cx.values();
+    let shown: Vec<usize> = values
+        .descriptors()
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| !values.view(d.id).is_some_and(|v| v.hidden))
+        .map(|(index, _)| index)
+        .collect();
+    let count = shown.len();
     let width = ui.available_width();
     let columns = (((width - s.spacing) / (s.cell_width + s.spacing)).floor() as usize).max(1);
     let rows = count.div_ceil(columns);
@@ -148,14 +157,14 @@ pub fn param_grid(ui: &mut Ui, editor: &mut EditorUi<'_>) {
     // Centre the grid in the width.
     let used = columns.min(count.max(1)) as f32 * (s.cell_width + s.spacing) + s.spacing;
     let left = area.left() + ((width - used) / 2.0).max(0.0);
-    for index in 0..count {
+    for (index, &param) in shown.iter().enumerate() {
         let (row, column) = (index / columns, index % columns);
         let min = pos2(
             left + s.spacing + column as f32 * (s.cell_width + s.spacing),
             area.top() + s.spacing + row as f32 * (s.cell_height + s.spacing),
         );
         let cell = Rect::from_min_size(min, vec2(s.cell_width, s.cell_height));
-        param_control(ui, editor.cx, theme, index, cell);
+        param_control(ui, editor.cx, theme, param, cell);
     }
 }
 

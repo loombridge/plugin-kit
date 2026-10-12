@@ -13,7 +13,7 @@ Every crate carries the prefix `lspk-`.
 | Crate | What it will hold |
 |---|---|
 | `lspk-rt` | The real-time harness: thread priority and audio workgroups, denormal flushing, the allocation trap, a lock-free logger, the RealtimeSanitizer harness |
-| `lspk-params` | Parameter descriptors, smoothing, sample-accurate parameter events, modulation offsets, gestures |
+| `lspk-params` | Parameter descriptors, smoothing, the parameter space of modular plug-ins (stable hierarchical IDs, fixed modules, slots, paths, remote-controls pages), sample-accurate parameter events, modulation offsets, gestures |
 | `lspk-commands` | The command registry: every user-facing action with a schema, a model-facing description and a permission class |
 | `lspk-agent` | The agent interface: MCP over stdio and over Streamable HTTP on loopback, tokens, permission prompts, the discovery file for running instances |
 | `lspk-dsp` | DSP building blocks: oscillators, interpolators, filters, envelopes, LFOs, oversampling, FFT, resampling, SIMD helpers, waveshapers |
@@ -29,7 +29,7 @@ Every crate carries the prefix `lspk-`.
 | `lspk-clap-wrapper` | free-audio's [clap-wrapper](https://github.com/free-audio/clap-wrapper) and the SDK sources it needs (VST3 SDK, AudioUnitSDK), vendored and built with `cc`, which make the VST3 and Audio Unit v2 exports from the CLAP one |
 | `lspk-test` | The headless test harness: renders, golden renders and null tests, measurements, format validators, a scripted MCP client |
 
-Two example plug-ins under `examples/`, never published, show the `Plugin` trait at its smallest and prove the format exports: `lspk-example-gain`, a stereo gain, and `lspk-example-sine`, an eight-voice sine instrument.
+Three example plug-ins under `examples/`, never published, show the `Plugin` trait and prove the format exports: `lspk-example-gain`, a stereo gain, `lspk-example-sine`, an eight-voice sine instrument, and `lspk-example-modular`, a small synthesiser of fixed modules and a two-slot effects rack, which proves the parameter space in every format.
 
 ## Develop
 
