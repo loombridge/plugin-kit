@@ -62,7 +62,8 @@ fn every_mode_at_0_50_and_100() {
                         pitch: &pitch,
                         ..Inputs::default()
                     };
-                    osc.process(512, &inputs, &ShaperInputs::default(), &mut out);
+                    // The scalar path: the same arithmetic on every platform.
+                    osc.process_scalar(512, &inputs, &ShaperInputs::default(), &mut out);
                     audio.extend(out.iter().step_by(n));
                 }
                 audio

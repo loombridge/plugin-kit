@@ -258,7 +258,10 @@ pub(crate) fn distort_smooth<L: Lane>(mode: Mode, a: L, x: L, state: &mut Svf<L>
     // The integrals' rounding grows with their size, so the closeness
     // allowed does too.
     let scale = driven.abs().max(last.abs()).max(c(1.0));
-    let apart = above(step.abs() - scale * c(1e-3));
+    // At 1 % of their size, the integrals' rounding (which differs in its
+    // last bits between paths that fuse multiply-adds and those that
+    // don't) stays below −100 dB of the curve.
+    let apart = above(step.abs() - scale * c(1e-2));
     let mean = (area - state.ic2) / pick(apart, c(1.0), step);
     let midpoint = curve(mode, (driven + last) * c(0.5));
     let y = pick(apart, midpoint, mean);
