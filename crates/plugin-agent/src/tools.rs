@@ -22,6 +22,9 @@ use crate::perception::{self, Job, PreviewArgs};
 pub const GUIDE_URI: &str = "lspk://guide";
 /// The guide every kit plug-in serves.
 pub const GUIDE: &str = include_str!("../guide.md");
+/// The address of the plug-in's own guide, served when it has one
+/// ([`Plugin::guide`]).
+pub const PLUGIN_GUIDE_URI: &str = "lspk://plugin-guide";
 
 const RULES: Rules<'static> = Rules {
     person_only: &person_only,
@@ -528,7 +531,8 @@ impl<P: Plugin> Program for Tools<P> {
             version: info.version.to_owned(),
             instructions: format!(
                 "You're connected to one running instance of {}, a plug-in in a host, through \
-                 its own agent server. Read the resource {GUIDE_URI} first. Start with `query` to \
+                 its own agent server. Read the resource {GUIDE_URI} first, and {PLUGIN_GUIDE_URI} \
+                 where the plug-in has one. Start with `query` to \
                  see its parameters and a summary; change them with `run` and `params.set`; \
                  hear the result with `preview`; keep and restore versions with `checkpoint`.",
                 info.name
@@ -648,25 +652,43 @@ impl<P: Plugin> Program for Tools<P> {
         }
     }
 
-    fn resources(&self, _host: &P) -> Vec<Value> {
-        vec![json!({
+    fn resources(&self, host: &P) -> Vec<Value> {
+        let mut resources = vec![json!({
             "uri": GUIDE_URI,
             "name": "guide",
             "title": "Agent guide",
             "description": "How to work with a plug-in built on the plug-in kit: its tools, \
                             parameters, previews and checkpoints.",
             "mimeType": "text/markdown",
-        })]
+        })];
+        if host.guide().is_some() {
+            resources.push(json!({
+                "uri": PLUGIN_GUIDE_URI,
+                "name": "plugin-guide",
+                "title": format!("{} guide", P::INFO.name),
+                "description": format!(
+                    "{}'s own concepts: its modules, how sound flows through them, and how to \
+                     get good results from it.",
+                    P::INFO.name
+                ),
+                "mimeType": "text/markdown",
+            }));
+        }
+        resources
     }
 
-    fn read_resource(&mut self, _host: &mut P, uri: &str) -> Result<Vec<Value>, String> {
-        if uri != GUIDE_URI {
-            return Err(format!("no resource is at `{uri}`"));
-        }
+    fn read_resource(&mut self, host: &mut P, uri: &str) -> Result<Vec<Value>, String> {
+        let text = match uri {
+            GUIDE_URI => GUIDE.replace("{name}", P::INFO.name),
+            PLUGIN_GUIDE_URI => host
+                .guide()
+                .ok_or_else(|| format!("{} has no guide of its own", P::INFO.name))?,
+            _ => return Err(format!("no resource is at `{uri}`")),
+        };
         Ok(vec![json!({
-            "uri": GUIDE_URI,
+            "uri": uri,
             "mimeType": "text/markdown",
-            "text": GUIDE.replace("{name}", P::INFO.name),
+            "text": text,
         })])
     }
 

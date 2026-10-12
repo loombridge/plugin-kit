@@ -65,6 +65,15 @@ fn an_agent_plays_the_sine_through_its_own_server() {
         let mut client = Client::new(Http::new(addr, token));
         client.initialize("sine-test").expect("initialised");
         check_tools(&client.tools().expect("tools")).expect("well-described tools");
+        // Its own guide, beside the kit's.
+        let resources = client
+            .request("resources/list", json!({}))
+            .expect("the resources");
+        assert_eq!(resources["resources"][1]["uri"], "lspk://plugin-guide");
+        let guide = client
+            .read_resource("lspk://plugin-guide")
+            .expect("its guide");
+        assert!(guide.contains("a pure sine"), "{guide}");
         let areas = call(&mut client, "list_commands", json!({}));
         assert_eq!(areas["areas"], json!({ "agent": 2, "params": 2 }));
         let state = call(&mut client, "query", json!({}));

@@ -136,6 +136,10 @@ pub enum Taper {
     /// Evenly in the value's logarithm, as frequencies and times are: each
     /// octave or doubling takes the same travel. Needs a range above 0.
     Logarithmic,
+    /// As a power of the travel: the value is `min + (max − min) × nᵏ` at
+    /// travel `n`, for times and rates whose knobs reach 0, such as an
+    /// envelope's `32 s × n⁵`. `k` is 2 to 8.
+    Power(u8),
 }
 
 /// The lowest finite gain a gain control's travel reaches by default, in
@@ -259,6 +263,16 @@ impl ParamDescriptor {
         self
     }
 
+    /// The same, with a power taper: the value is `min + (max − min) × nᵏ`
+    /// at travel `n`, `k` from 2 to 8 (a continuous parameter only).
+    #[must_use]
+    pub fn power(mut self, k: u8) -> Self {
+        if let ParamKind::Continuous { taper, .. } = &mut self.kind {
+            *taper = Taper::Power(k);
+        }
+        self
+    }
+
     /// The same, always showing `count` decimals rather than its unit's
     /// rule (a continuous parameter only).
     #[must_use]
@@ -349,6 +363,10 @@ impl ParamDescriptor {
                 taper: Taper::Logarithmic,
                 ..
             } => (value / min).ln() / (max / min).ln(),
+            ParamKind::Continuous {
+                taper: Taper::Power(k),
+                ..
+            } => ((value - min) / (max - min)).powf(1.0 / f64::from(*k)),
             ParamKind::Gain { max_db, floor_db } => {
                 if value <= 0.0 {
                     0.0
@@ -385,6 +403,10 @@ impl ParamDescriptor {
                 taper: Taper::Logarithmic,
                 ..
             } => min * (max / min).powf(n),
+            ParamKind::Continuous {
+                taper: Taper::Power(k),
+                ..
+            } => min + (max - min) * n.powi(i32::from(*k)),
             ParamKind::Gain { max_db, floor_db } => {
                 let step = 1.0 / (max_db - floor_db);
                 if n < step / 2.0 {
@@ -487,6 +509,11 @@ impl ParamDescriptor {
                 }
                 if *taper == Taper::Logarithmic && min <= 0.0 {
                     return fail("has a logarithmic taper reaching 0");
+                }
+                if let Taper::Power(k) = taper
+                    && !(2..=8).contains(k)
+                {
+                    return fail("has a power taper outside 2 to 8");
                 }
             }
             ParamKind::Gain { max_db, floor_db } => {
@@ -622,6 +649,34 @@ mod tests {
         // The travel is even in dB above the floor.
         let half = gain.denormalize(gain.normalize(db_to_gain(-32.0)));
         assert!((gain_to_db(half) + 32.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_power_taper_reaches_zero_and_follows_its_power() {
+        // An envelope time: 32 s × n⁵, so the middle of the travel is 1 s.
+        let time = ParamDescriptor::continuous(
+            id(4),
+            "Attack",
+            (0.0, 32_000.0),
+            1.0,
+            ParamUnit::Milliseconds,
+        )
+        .power(5);
+        time.check().unwrap();
+        assert_eq!(time.denormalize(0.0), 0.0);
+        assert!((time.denormalize(0.5) - 1000.0).abs() < 1e-9);
+        assert!((time.normalize(1000.0) - 0.5).abs() < 1e-12);
+        assert_eq!(time.denormalize(1.0), 32_000.0);
+        for n in [0.0, 0.1, 0.5, 0.9, 1.0] {
+            assert!((time.normalize(time.denormalize(n)) - n).abs() < 1e-12);
+        }
+        let json = serde_json::to_value(&time.kind).unwrap();
+        assert_eq!(
+            json["continuous"]["taper"],
+            serde_json::json!({ "power": 5 })
+        );
+        assert!(time.clone().power(1).check().is_err());
+        assert!(time.power(9).check().is_err());
     }
 
     #[test]

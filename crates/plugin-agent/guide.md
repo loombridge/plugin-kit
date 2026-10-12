@@ -1,6 +1,6 @@
 # Agent guide: {name}
 
-You're connected to one running instance of {name}, a plug-in built on Loombridge's plug-in kit, inside a host (a digital audio workstation). The person switched on this instance's agent server and gave you its token. This guide is the resource `lspk://guide`.
+You're connected to one running instance of {name}, a plug-in built on Loombridge's plug-in kit, inside a host (a digital audio workstation). The person switched on this instance's agent server and gave you its token. This guide is the resource `lspk://guide`; where {name} has a guide of its own, to its modules and how to use them, it's the resource `lspk://plugin-guide`.
 
 ## Tools
 
