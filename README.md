@@ -18,7 +18,7 @@ Every crate carries the prefix `lspk-`.
 | `lspk-agent` | The agent interface: MCP over stdio and over Streamable HTTP on loopback, tokens, permission prompts, the discovery file for running instances |
 | `lspk-dsp` | DSP building blocks: oscillators, interpolators, filters, envelopes, LFOs, oversampling, FFT, resampling, SIMD helpers, waveshapers |
 | `lspk-voice` | Voice allocation and stealing, mono, legato and glide, unison, MPE and per-note expression |
-| `lspk-mod` | The modulation engine: sources, destinations, depth, curves, per-voice and global routes |
+| `lspk-mod` | The modulation engine: a 64-slot matrix of sources, destinations, curves and auxiliary sources, per-voice and global, sample-accurate, at audio rate only where a destination needs it; its edits as commands |
 | `lspk-fx` | The effects library, each effect usable inside a plug-in and as a plug-in of its own |
 | `lspk-wavetable` | The wavetable model, WAV import and export, mipmaps, the wavetable oscillator, spectral operations, resynthesis |
 | `lspk-seq` | Arpeggiator and step and clip sequencing, synced to the host's tempo |
