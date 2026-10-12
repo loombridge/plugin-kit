@@ -1,8 +1,10 @@
 //! Repository tasks for the plug-in kit. Run `cargo xtask help` for the list.
 
 mod bench;
+mod formats;
 mod harness;
 mod private_terms;
+mod vendored;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -10,19 +12,22 @@ use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
-const USAGE: &str = "\
+pub(crate) const USAGE: &str = "\
 Usage: cargo xtask <task>
 
 Tasks:
   check          Run every check: format, clippy, tests (cargo-nextest, then the
-                 doctests), layers, deny, the deny self-test, and private terms
+                 doctests), layers, deny, the deny self-test, vendored code, and
+                 private terms
   layers         Check the crate layering rules
   deny-selftest  Prove that deny.toml still rejects GPL, LGPL and AGPL dependencies
+  vendored       Check every vendored C and C++ component's licence
   private-terms  Fail if a tracked file contains a word listed in .git/info/private-terms
                  (maintainers' checkouts only; skipped without it)
   bundle <crate>...
-                 Build each plug-in crate in release and lay it out as a CLAP file in
-                 target/bundle (for clap-validator and hosts)
+                 Build each plug-in crate in release and lay it out in target/bundle as
+                 a .clap, a .vst3 and, on macOS, a .component (Audio Unit v2), signed
+                 ad hoc on macOS
   golden [--update] [NAME...]
                  Run every crate's golden suite (tests/golden.rs) against its references.
                  With --update, first remake the references whose renders changed (or
@@ -39,7 +44,10 @@ Tasks:
                  (the gate prints them); commit it and say why in the pull request
   validate [<crate>...]
                  Bundle the plug-in crates (the examples if none are named) and run each
-                 format's validators on them (clap-validator)
+                 format's validators on them: clap-validator; Steinberg's VST3 validator,
+                 built from the vendored VST3 SDK; on macOS, auval, with each .component
+                 installed in ~/Library/Audio/Plug-Ins/Components while it runs; and
+                 pluginval at strictness 5 where it's on the PATH (skipped otherwise)
   help           Show this message
 ";
 
@@ -100,7 +108,11 @@ fn main() -> ExitCode {
 fn run(root: &Path, args: &[String]) -> Result<(), String> {
     let task = args.first().map(String::as_str);
     match task {
-        Some("bundle") => return bundle(root, &args[1..]),
+        Some("bundle") => return formats::bundle(root, &args[1..]).map(drop),
+        Some(formats::PLUGIN_INFO) => {
+            let library = args.get(1).ok_or("name the library")?;
+            return formats::print_plugin_info(Path::new(library));
+        }
         Some("golden") => return harness::golden(root, &args[1..]),
         Some("bench") => return bench::bench(root, &args[1..]),
         Some("validate") => return harness::validate(root, &args[1..]),
@@ -114,54 +126,13 @@ fn run(root: &Path, args: &[String]) -> Result<(), String> {
         Some("layers") => layers(root),
         Some("deny-selftest") => deny_selftest(root),
         Some("private-terms") => private_terms::check(root),
+        Some("vendored") => vendored_check(root),
         None | Some("help" | "-h" | "--help") => {
             print!("{USAGE}");
             Ok(())
         }
         Some(other) => Err(format!("unknown task `{other}`\n\n{USAGE}")),
     }
-}
-
-/// Builds each plug-in crate in `packages` in release, and writes it as
-/// `target/bundle/<crate>.clap`.
-fn bundle(root: &Path, packages: &[String]) -> Result<(), String> {
-    if packages.is_empty() {
-        return Err(format!("name the plug-in crates to bundle\n\n{USAGE}"));
-    }
-    let mut args = vec!["build", "--release", "--locked"];
-    for package in packages {
-        args.extend(["--package", package]);
-    }
-    cargo(root, &args)?;
-    let metadata = cargo_metadata(root)?;
-    let target = metadata["target_directory"]
-        .as_str()
-        .map(PathBuf::from)
-        .ok_or("cargo metadata gave no target directory")?;
-    for package in packages {
-        let library = target.join("release").join(format!(
-            "{}{}{}",
-            std::env::consts::DLL_PREFIX,
-            package.replace('-', "_"),
-            std::env::consts::DLL_SUFFIX
-        ));
-        if !library.exists() {
-            return Err(format!(
-                "{} has no library at {}: is it a cdylib?",
-                package,
-                library.display()
-            ));
-        }
-        let clap = lspk_plugin::bundle::write_clap(
-            &library,
-            &target.join("bundle"),
-            package,
-            &format!("com.loombridge.{package}"),
-        )
-        .map_err(|e| format!("couldn't write {package}'s CLAP file: {e}"))?;
-        eprintln!("{}", clap.display());
-    }
-    Ok(())
 }
 
 /// Runs every check, reports each result, and fails if any failed.
@@ -199,6 +170,7 @@ fn check(root: &Path) -> Result<(), String> {
             Box::new(|| cargo(root, &["deny", "--locked", "check"])),
         ),
         ("deny self-test", Box::new(|| deny_selftest(root))),
+        ("vendored code", Box::new(|| vendored_check(root))),
         ("private terms", Box::new(|| private_terms::check(root))),
     ];
 
@@ -300,6 +272,11 @@ fn layer_violations(graph: &DependencyGraph) -> Vec<String> {
         }
     }
     violations
+}
+
+/// Checks the licences of the vendored C and C++ code.
+fn vendored_check(root: &Path) -> Result<(), String> {
+    vendored::check(root, &private_terms::tracked_files(root)?)
 }
 
 /// Runs cargo-deny against a fixture that depends on a GPL, an LGPL and an
@@ -445,7 +422,7 @@ fn ships(dep: &Value) -> bool {
         .any(|kind| kind["kind"].is_null() || kind["kind"] == "build")
 }
 
-fn cargo_metadata(root: &Path) -> Result<Value, String> {
+pub(crate) fn cargo_metadata(root: &Path) -> Result<Value, String> {
     let output = Command::new(cargo_bin())
         .args([
             "metadata",
@@ -465,7 +442,7 @@ fn cargo_metadata(root: &Path) -> Result<Value, String> {
 }
 
 /// Runs a cargo command in the workspace root, streaming its output.
-fn cargo(root: &Path, args: &[&str]) -> Result<(), String> {
+pub(crate) fn cargo(root: &Path, args: &[&str]) -> Result<(), String> {
     let status = Command::new(cargo_bin())
         .args(args)
         .current_dir(root)

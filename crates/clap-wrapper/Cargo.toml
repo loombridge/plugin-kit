@@ -1,0 +1,32 @@
+[package]
+name = "lspk-clap-wrapper"
+description = "free-audio's clap-wrapper and the SDK sources it needs, vendored and built with cc: VST3 and Audio Unit v2 entry points for the CLAP plug-in in the same library."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# The crate's own code. Each vendored component in vendor/ keeps its own
+# licence (MIT, Apache-2.0 or public domain), which `cargo xtask vendored`
+# checks; see src/lib.rs.
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[lib]
+# Its entry points call into the plug-in's `clap_entry`, which only a plug-in
+# library has, so the crate links only into one: there's no test binary of
+# its own. Its tests are the plug-ins' (see lspk-plugin's tests/formats.rs).
+test = false
+doctest = false
+
+[features]
+# The VST3 wrapper, on every platform.
+vst3 = []
+# The Audio Unit v2 wrapper, on macOS; nothing elsewhere.
+auv2 = []
+
+[build-dependencies]
+cc = { version = "1.2.52", features = ["parallel"] }
+
+[lints]
+workspace = true

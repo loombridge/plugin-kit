@@ -9,7 +9,9 @@
 //! | [`cpu`] | Wall-clock timing of blocks, for the performance harness |
 //! | [`bench`] | The performance harness: benchmark suites of plug-in scenarios and micro-benchmarks, timed on reference machines and counted in instructions by CI's regression gate |
 //! | [`clap`] | A CLAP host for tests, which loads a plug-in from its `.clap` file or its entry point and drives it block by block |
-//! | [`validate`] | The format validators CI runs on built plug-ins (`clap-validator` today) |
+//! | [`vst3`](mod@vst3) | A VST3 host for tests, which makes a plug-in from its VST3 factory, drives it block by block, and records the edits it reports to the host |
+//! | `auv2` (macOS) | An Audio Unit host for tests, which registers a plug-in's Audio Unit factory in the test process, renders it, and records the edits it reports to listeners |
+//! | [`validate`] | The format validators CI runs on built plug-ins: clap-validator, Steinberg's VST3 validator, auval and pluginval |
 //! | [`agent`] | The scripted MCP client for a plug-in's agent tests |
 //!
 //! # The allocation trap
@@ -41,6 +43,8 @@
 //! ```
 
 pub mod agent;
+#[cfg(target_os = "macos")]
+pub mod auv2;
 pub mod bench;
 pub mod clap;
 pub mod cpu;
@@ -49,6 +53,7 @@ pub mod measure;
 pub mod render;
 pub mod signal;
 pub mod validate;
+pub mod vst3;
 
 pub use clap::ClapTestHost;
 pub use render::{Instance, Output, Render, Script, Settings, render};

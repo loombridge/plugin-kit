@@ -1,0 +1,23 @@
+# Steinberg's VST3 validator, built from the VST3 SDK sources the kit
+# vendors (crates/clap-wrapper/vendor/vst3sdk), for `cargo xtask validate`.
+# It's a tool, never shipped, so it sits outside the workspace with a lock
+# file of its own.
+
+[package]
+name = "lspk-vst3-validator"
+description = "Steinberg's VST3 validator, built from the vendored VST3 SDK."
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "vst3-validator"
+path = "src/main.rs"
+
+[build-dependencies]
+cc = { version = "1.2.52", features = ["parallel"] }
+
+[workspace]

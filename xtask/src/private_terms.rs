@@ -118,7 +118,7 @@ fn contains_word(text: &str, term: &str) -> bool {
 }
 
 /// The files git tracks, relative to the root.
-fn tracked_files(root: &Path) -> Result<Vec<String>, String> {
+pub fn tracked_files(root: &Path) -> Result<Vec<String>, String> {
     let output = Command::new("git")
         .args(["ls-files", "-z"])
         .current_dir(root)
