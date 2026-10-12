@@ -1,0 +1,20 @@
+0x00000001 param "Volume"
+0x01000000 osc "A" / param "Level"
+0x01000001 osc "A" / param "Shape"
+0x01000002 osc "A" / param "Pitch"
+0x01010000 osc "B" / param "Level"
+0x01010001 osc "B" / param "Shape"
+0x01010002 osc "B" / param "Pitch"
+0x02000000 filter "1" / param "Cutoff"
+0x03000000 env "1" / param "Attack"
+0x03000001 env "1" / param "Release"
+0x14000000 fx "1" / param "Type": "Off", "Distortion", "Delay", "Tremolo"
+0x14008000 fx "1" / slot 0
+0x14008001 fx "1" / slot 1
+0x14008002 fx "1" / slot 2
+0x14008003 fx "1" / slot 3
+0x14010000 fx "2" / param "Type": "Off", "Distortion", "Delay", "Tremolo"
+0x14018000 fx "2" / slot 0
+0x14018001 fx "2" / slot 1
+0x14018002 fx "2" / slot 2
+0x14018003 fx "2" / slot 3

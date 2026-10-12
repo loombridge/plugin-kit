@@ -1320,6 +1320,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "lspk-example-modular"
+version = "0.0.0"
+dependencies = [
+ "lspk-params",
+ "lspk-plugin",
+ "lspk-plugin-agent",
+ "lspk-rt",
+ "lspk-test",
+ "lspk-ui",
+ "serde_json",
+]
+
+[[package]]
 name = "lspk-example-sine"
 version = "0.0.0"
 dependencies = [
