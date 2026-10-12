@@ -96,6 +96,8 @@ mod lane;
 
 use lane::{Lane, TAN_LIMIT, exp2, saturation_gain, soft_clip, tan};
 
+use std::marker::PhantomData;
+
 use crate::simd::{self, F32s, Kernel, Level};
 
 /// A filter's type: its response and slope.
@@ -617,22 +619,17 @@ impl FilterBank {
             frames * self.channels * self.stride,
             "the audio holds as many frames as the pitch buffer"
         );
-        let run = Run {
-            bank: self,
-            pitch,
-            audio,
-            frames,
-        };
-        if run.bank.simd {
-            simd::dispatch(run);
-        } else {
-            run.go::<f32>();
-        }
+        let simd = self.simd;
+        self.dispatch(simd.then(simd::level), pitch, audio, frames);
     }
 
     /// As [`process`](Self::process), with SIMD lanes at `level`, for tests
     /// and benchmarks that compare paths. Gives `false`, and leaves `audio`
     /// alone, if this CPU can't run `level` or the bank is scalar.
+    ///
+    /// # Panics
+    ///
+    /// As [`process`](Self::process).
     pub fn process_at(&mut self, level: Level, pitch: &[f32], audio: &mut [f32]) -> bool {
         if !self.simd {
             return false;
@@ -640,16 +637,61 @@ impl FilterBank {
         assert_eq!(pitch.len() % self.stride, 0);
         let frames = pitch.len() / self.stride;
         assert_eq!(audio.len(), frames * self.channels * self.stride);
-        simd::dispatch_at(
-            level,
-            Run {
-                bank: self,
+        self.dispatch(Some(level), pitch, audio, frames)
+    }
+
+    /// Runs the block with this bank's type, scalar or at `level`. Each type
+    /// is a kernel of its own, so each compiled copy holds one structure.
+    fn dispatch(
+        &mut self,
+        level: Option<Level>,
+        pitch: &[f32],
+        audio: &mut [f32],
+        frames: usize,
+    ) -> bool {
+        fn go<T: Topology>(
+            bank: &mut FilterBank,
+            level: Option<Level>,
+            pitch: &[f32],
+            audio: &mut [f32],
+            frames: usize,
+        ) -> bool {
+            let run = Run::<T> {
+                bank,
                 pitch,
                 audio,
                 frames,
-            },
-        )
-        .is_ok()
+                topology: PhantomData,
+            };
+            match level {
+                None => {
+                    run.go::<f32>();
+                    true
+                }
+                Some(level) => simd::dispatch_at(level, run).is_ok(),
+            }
+        }
+        let run = match self.kind {
+            FilterType::Lp6 => go::<OnePole<false>>,
+            FilterType::Hp6 => go::<OnePole<true>>,
+            FilterType::Lp12 => go::<Svf12<LOW>>,
+            FilterType::Hp12 => go::<Svf12<HIGH>>,
+            FilterType::Bp12 => go::<Svf12<BAND>>,
+            FilterType::Peak12 => go::<Svf12<PEAK>>,
+            FilterType::Notch12 => go::<Svf12<NOTCH>>,
+            FilterType::Lp18 => go::<Svf18<false>>,
+            FilterType::Hp18 => go::<Svf18<true>>,
+            FilterType::Lp24 => go::<Svf24<LOW>>,
+            FilterType::Hp24 => go::<Svf24<HIGH>>,
+            FilterType::Bp24 => go::<Svf24<BAND>>,
+            FilterType::Peak24 => go::<Svf24<PEAK>>,
+            FilterType::Notch24 => go::<Svf24<NOTCH>>,
+            FilterType::Ladder6 => go::<Ladder<1>>,
+            FilterType::Ladder12 => go::<Ladder<2>>,
+            FilterType::Ladder18 => go::<Ladder<3>>,
+            FilterType::Ladder24 => go::<Ladder<4>>,
+        };
+        run(self, level, pitch, audio, frames)
     }
 }
 
@@ -666,14 +708,15 @@ pub fn hertz_of(pitch: f32, reference: f32) -> f32 {
 }
 
 /// One call of [`FilterBank::process`], as a SIMD kernel.
-struct Run<'a> {
+struct Run<'a, T> {
     bank: &'a mut FilterBank,
     pitch: &'a [f32],
     audio: &'a mut [f32],
     frames: usize,
+    topology: PhantomData<T>,
 }
 
-impl Kernel for Run<'_> {
+impl<T: Topology> Kernel for Run<'_, T> {
     type Output = ();
 
     #[inline(always)]
@@ -691,7 +734,7 @@ struct Shared<L> {
     clip_out: L,
 }
 
-impl Run<'_> {
+impl<T: Topology> Run<'_, T> {
     #[inline(always)]
     fn go<L: Lane>(self) {
         let bank = self.bank;
@@ -728,50 +771,7 @@ impl Run<'_> {
                     voice,
                     slot,
                 };
-                let audio = &mut *self.audio;
-                let (p, s) = (&mut params, &mut state);
-                match bank.kind {
-                    FilterType::Lp6 => {
-                        block.run::<L, OnePole<false>>(&shared, &targets, p, s, audio)
-                    }
-                    FilterType::Hp6 => {
-                        block.run::<L, OnePole<true>>(&shared, &targets, p, s, audio)
-                    }
-                    FilterType::Lp12 => block.run::<L, Svf12<LOW>>(&shared, &targets, p, s, audio),
-                    FilterType::Hp12 => block.run::<L, Svf12<HIGH>>(&shared, &targets, p, s, audio),
-                    FilterType::Bp12 => block.run::<L, Svf12<BAND>>(&shared, &targets, p, s, audio),
-                    FilterType::Peak12 => {
-                        block.run::<L, Svf12<PEAK>>(&shared, &targets, p, s, audio)
-                    }
-                    FilterType::Notch12 => {
-                        block.run::<L, Svf12<NOTCH>>(&shared, &targets, p, s, audio);
-                    }
-                    FilterType::Lp18 => {
-                        block.run::<L, Svf18<false>>(&shared, &targets, p, s, audio)
-                    }
-                    FilterType::Hp18 => block.run::<L, Svf18<true>>(&shared, &targets, p, s, audio),
-                    FilterType::Lp24 => block.run::<L, Svf24<LOW>>(&shared, &targets, p, s, audio),
-                    FilterType::Hp24 => block.run::<L, Svf24<HIGH>>(&shared, &targets, p, s, audio),
-                    FilterType::Bp24 => block.run::<L, Svf24<BAND>>(&shared, &targets, p, s, audio),
-                    FilterType::Peak24 => {
-                        block.run::<L, Svf24<PEAK>>(&shared, &targets, p, s, audio)
-                    }
-                    FilterType::Notch24 => {
-                        block.run::<L, Svf24<NOTCH>>(&shared, &targets, p, s, audio);
-                    }
-                    FilterType::Ladder6 => {
-                        block.run::<L, Ladder<1>>(&shared, &targets, p, s, audio)
-                    }
-                    FilterType::Ladder12 => {
-                        block.run::<L, Ladder<2>>(&shared, &targets, p, s, audio)
-                    }
-                    FilterType::Ladder18 => {
-                        block.run::<L, Ladder<3>>(&shared, &targets, p, s, audio)
-                    }
-                    FilterType::Ladder24 => {
-                        block.run::<L, Ladder<4>>(&shared, &targets, p, s, audio)
-                    }
-                }
+                block.run::<L, T>(&shared, &targets, &mut params, &mut state, self.audio);
                 for (i, value) in params.iter().enumerate() {
                     value.store(&mut bank.smoothed[i][slot..]);
                 }
