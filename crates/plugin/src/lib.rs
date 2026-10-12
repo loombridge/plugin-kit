@@ -62,6 +62,7 @@
 //! stepped parameter as its whole-number value. The kit converts in both
 //! directions.
 
+pub mod agent_commands;
 pub mod audio;
 pub mod bundle;
 pub mod editor;
@@ -103,10 +104,11 @@ use std::fmt;
 /// - **R0.7, standalone:** an adapter that calls [`Plugin::activate`] and
 ///   [`Processor::process`] from an audio device's callback, with a
 ///   [`HostBackend`] of its own.
-/// - **R0.8, the Beatlayer device:** the same, inside Beatlayer's engine,
-///   with [`Plugin::register_commands`] and [`Plugin::run_command`] reached
-///   through Beatlayer's registry; and the agent-commands CLAP extension,
-///   which serves the same two methods to a CLAP host.
+/// - **R0.8, the Beatlayer device:** the same, inside Beatlayer's engine (its
+///   own adapter, in Beatlayer), with [`Plugin::register_commands`] and
+///   [`Plugin::run_command`] reached through Beatlayer's registry; and the
+///   agent-commands CLAP extension ([`agent_commands`]), which serves the
+///   same two methods to any CLAP host that knows it.
 /// - **R0.9, the in-plug-in agent server** (`lspk-plugin-agent`): runs
 ///   from [`Plugin::on_main_thread`], woken from its own threads through
 ///   [`Host::waker`], changes parameters through [`Host::edit`], and reads

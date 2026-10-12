@@ -12,7 +12,7 @@ publish.workspace = true
 default = ["hosts"]
 # The CLAP, VST3 and Audio Unit hosts for tests. Without them the crate is the
 # render harness and the measurements, which a plug-in may use at run time.
-hosts = ["dep:clack-host", "dep:clack-extensions", "dep:vst3"]
+hosts = ["dep:clack-host", "dep:clack-extensions", "dep:vst3", "lspk-plugin/clap-host", "dep:lspk-commands"]
 
 [dependencies]
 # The in-process harness drives a plug-in through its traits; the CLAP export
@@ -20,6 +20,8 @@ hosts = ["dep:clack-host", "dep:clack-extensions", "dep:vst3"]
 lspk-plugin = { workspace = true, default-features = false }
 lspk-params.workspace = true
 lspk-rt.workspace = true
+# The commands a hosted plug-in lists through the agent-commands extension.
+lspk-commands = { workspace = true, optional = true }
 # The plug-in's own parameter edits reach the processor through this queue, as
 # lspk-plugin's adapters take them.
 rtrb = "0.4.0"

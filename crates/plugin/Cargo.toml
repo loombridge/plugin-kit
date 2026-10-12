@@ -11,7 +11,10 @@ publish.workspace = true
 [features]
 default = ["clap"]
 # The CLAP export (`export_clap!`), through clack.
-clap = ["dep:clack-plugin", "dep:clack-extensions"]
+clap = ["dep:clack-plugin", "dep:clack-extensions", "dep:clack-common", "dep:clap-sys"]
+# The host side of the kit's agent-commands CLAP extension, for a host built
+# on clack-host (`agent_commands::PluginAgentCommands`).
+clap-host = ["dep:clack-host", "dep:clack-common", "dep:clap-sys"]
 # The VST3 export, made from the CLAP export by clap-wrapper.
 vst3 = ["clap", "dep:lspk-clap-wrapper", "lspk-clap-wrapper/vst3"]
 # The Audio Unit v2 export (macOS), made from the CLAP export by clap-wrapper.
@@ -40,6 +43,11 @@ clack-extensions = { version = "=0.2.0", optional = true, features = [
     "track-info",
 ] }
 lspk-clap-wrapper = { workspace = true, optional = true }
+# The agent-commands extension's C struct and its two sides, at the versions
+# clack 0.2.0 uses.
+clack-common = { version = "=0.2.0", optional = true }
+clack-host = { version = "=0.2.0", optional = true }
+clap-sys = { version = "0.5.0", optional = true }
 
 [dev-dependencies]
 lspk-rt.workspace = true

@@ -2,8 +2,10 @@
 //!
 //! [`export_clap!`](crate::export_clap) in a plug-in's `cdylib` crate makes
 //! it a CLAP plug-in with the `params`, `state`, `audio-ports`,
-//! `note-ports`, `latency`, `tail` and `track-info` extensions, and `gui`
-//! for a plug-in with an [`Editor`](crate::Editor). The glue between
+//! `note-ports`, `latency`, `tail` and `track-info` extensions, `gui`
+//! for a plug-in with an [`Editor`](crate::Editor), and the kit's own
+//! agent-commands extension ([`agent_commands`](crate::agent_commands)),
+//! which serves its commands to the host. The glue between
 //! CLAP's calls and the [`Plugin`] and [`Processor`] traits allocates
 //! nothing, locks nothing and never blocks on the audio thread.
 //!
@@ -51,6 +53,9 @@ use clack_plugin::events::io::{InputEvents, OutputEvents};
 use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::events::{Match, Pckn};
 use clack_plugin::extensions::PluginExtensions;
+use clack_plugin::extensions::prelude::{
+    ExtensionImplementation, PluginWrapper, RawExtensionImplementation,
+};
 use clack_plugin::host::{HostAudioProcessorHandle, HostMainThreadHandle, HostSharedHandle};
 use clack_plugin::plugin::{
     Plugin as ClackPlugin, PluginAudioProcessor, PluginDescriptor, PluginError as ClackError,
@@ -65,6 +70,7 @@ use clack_plugin::utils::{ClapId, Cookie};
 use lspk_params::{ParamDescriptor, ParamId, ParamKind};
 use rtrb::Consumer;
 
+use crate::agent_commands::{self, PluginAgentCommands, clap_plugin_agent_commands};
 use crate::audio::{Buffers, MAX_CHANNELS};
 use crate::editor::{
     Editor, EditorChanges, EditorContext, EditorHost, EditorSize, ParentWindow, WindowApi,
@@ -231,7 +237,8 @@ impl<P: Plugin> ClackPlugin for ClapPlugin<P> {
             .register::<PluginState>()
             .register::<PluginLatency>()
             .register::<PluginTail>()
-            .register::<PluginTrackInfo>();
+            .register::<PluginTrackInfo>()
+            .register::<PluginAgentCommands>();
         if P::INFO.notes.input || P::INFO.notes.output {
             builder.register::<PluginNotePorts>();
         }
@@ -488,6 +495,105 @@ impl<P: Plugin> PluginTrackInfoImpl for ClapMainThread<'_, P> {
         if let Ok(mut plugin) = self.plugin.try_borrow_mut() {
             plugin.track_info_changed();
         }
+    }
+}
+
+// SAFETY: the struct is the extension's own, as `agent_commands` declares
+// it, and its functions take the plug-in and stream pointers CLAP passes.
+unsafe impl<P: Plugin> ExtensionImplementation<ClapPlugin<P>> for PluginAgentCommands {
+    const IMPLEMENTATION: RawExtensionImplementation =
+        RawExtensionImplementation::new(&clap_plugin_agent_commands {
+            list: Some(list_commands::<P>),
+            run: Some(run_command::<P>),
+        });
+}
+
+/// The extension's `list`: the plug-in's commands as JSON.
+unsafe extern "C" fn list_commands<P: Plugin>(
+    plugin: *const clap_sys::plugin::clap_plugin,
+    out: *const clap_sys::stream::clap_ostream,
+) -> bool {
+    if out.is_null() {
+        return false;
+    }
+    // SAFETY: CLAP calls this on the main thread with the instance's own
+    // pointer and a stream valid through the call.
+    unsafe {
+        PluginWrapper::<ClapPlugin<P>>::handle(plugin, |wrapper| {
+            let main = wrapper.main_thread();
+            let out = OutputStream::from_raw_mut(&mut *out.cast_mut());
+            let listed = main
+                .registry()
+                .map(|registry| agent_commands::encode_list(&registry));
+            Ok(listed.is_ok_and(|bytes| out.write_all(&bytes).is_ok()))
+        })
+    }
+    .unwrap_or(false)
+}
+
+/// The extension's `run`: runs a command, writing its result or why it
+/// failed.
+unsafe extern "C" fn run_command<P: Plugin>(
+    plugin: *const clap_sys::plugin::clap_plugin,
+    id: *const std::ffi::c_char,
+    args: *const std::ffi::c_char,
+    out: *const clap_sys::stream::clap_ostream,
+) -> bool {
+    if out.is_null() || id.is_null() {
+        return false;
+    }
+    // SAFETY: as in `list_commands`; `id` and `args` (unless null) are
+    // NUL-terminated strings valid through the call.
+    unsafe {
+        PluginWrapper::<ClapPlugin<P>>::handle(plugin, |wrapper| {
+            let main = wrapper.main_thread();
+            let out = OutputStream::from_raw_mut(&mut *out.cast_mut());
+            let args = (!args.is_null()).then(|| CStr::from_ptr(args));
+            let ran = main.run_json(CStr::from_ptr(id), args);
+            Ok(match ran {
+                Ok(result) => serde_json::to_vec(&result)
+                    .ok()
+                    .is_some_and(|bytes| out.write_all(&bytes).is_ok()),
+                Err(why) => {
+                    let _ = out.write_all(why.as_bytes());
+                    false
+                }
+            })
+        })
+    }
+    .unwrap_or(false)
+}
+
+impl<P: Plugin> ClapMainThread<'_, P> {
+    /// The plug-in's commands.
+    fn registry(&self) -> Result<lspk_commands::Registry, String> {
+        let plugin = self
+            .plugin
+            .try_borrow()
+            .map_err(|_| "the plug-in is busy".to_owned())?;
+        let mut registry = lspk_commands::Registry::new();
+        plugin
+            .register_commands(&mut registry)
+            .map_err(|e| e.to_string())?;
+        Ok(registry)
+    }
+
+    /// Runs command `id` with `args`, JSON or none.
+    fn run_json(&self, id: &CStr, args: Option<&CStr>) -> Result<serde_json::Value, String> {
+        let id = id.to_str().map_err(|_| "the command's ID isn't UTF-8".to_owned())?;
+        let args = match args.map(CStr::to_bytes) {
+            None | Some(b"") => serde_json::Value::Null,
+            Some(bytes) => serde_json::from_slice(bytes)
+                .map_err(|e| format!("`{id}`'s arguments aren't JSON: {e}"))?,
+        };
+        let registry = self.registry()?;
+        agent_commands::run_checked(&registry, id, &args, |id, args| {
+            self.plugin
+                .try_borrow_mut()
+                .map_err(|_| "the plug-in is busy".to_owned())?
+                .run_command(id, args)
+                .map_err(|e| e.message().to_owned())
+        })
     }
 }
 

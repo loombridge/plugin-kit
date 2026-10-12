@@ -13,17 +13,31 @@ publish = false
 # its entry point, and makes Cargo build the cdylib beside them.
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["export"]
+# Its exports (CLAP natively, with VST3 and, on macOS, Audio Unit v2 made from
+# it), with the agent interface and the generic editor. A host that compiles
+# the plug-in in, as Beatlayer's native devices do, turns it off and gets the
+# plug-in's types alone.
+export = [
+    "lspk-plugin/clap",
+    "lspk-plugin/vst3",
+    "lspk-plugin/auv2",
+    "dep:lspk-ui",
+    "dep:lspk-plugin-agent",
+]
+
 [dependencies]
 # Its own command, `gain.reset`.
 lspk-commands.workspace = true
 lspk-params.workspace = true
-# CLAP natively, with VST3 and (on macOS) Audio Unit v2 made from it.
-lspk-plugin = { workspace = true, features = ["clap", "vst3", "auv2"] }
+# The `Plugin` trait; its formats come with `export`.
+lspk-plugin.workspace = true
 # The generic editor: every parameter drawn from its descriptor.
-lspk-ui.workspace = true
+lspk-ui = { workspace = true, optional = true }
 # The agent interface: its parameters and commands as tools, and its own MCP
 # server, off until the person switches it on.
-lspk-plugin-agent.workspace = true
+lspk-plugin-agent = { workspace = true, optional = true }
 # Its command's arguments and results.
 serde_json = "1"
 
