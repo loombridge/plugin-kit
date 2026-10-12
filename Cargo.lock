@@ -1378,8 +1378,11 @@ dependencies = [
 name = "lspk-plugin"
 version = "0.0.0"
 dependencies = [
+ "clack-common",
  "clack-extensions",
+ "clack-host",
  "clack-plugin",
+ "clap-sys",
  "lspk-clap-wrapper",
  "lspk-commands",
  "lspk-params",
@@ -1481,10 +1484,21 @@ dependencies = [
 [[package]]
 name = "lspk-voice"
 version = "0.0.0"
+dependencies = [
+ "lspk-dsp",
+ "lspk-plugin",
+ "lspk-rt",
+ "lspk-test",
+]
 
 [[package]]
 name = "lspk-wavetable"
 version = "0.0.0"
+dependencies = [
+ "lspk-rt",
+ "lspk-test",
+ "realfft",
+]
 
 [[package]]
 name = "lspk-xtask"

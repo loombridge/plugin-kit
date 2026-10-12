@@ -48,6 +48,7 @@ use clack_host::events::{Match, Pckn};
 use clack_host::prelude::*;
 use lspk_params::ParamDescriptor;
 use lspk_plugin::Event;
+use lspk_plugin::agent_commands::PluginAgentCommands;
 
 use crate::cpu::Timings;
 use crate::render::{Output, Render, Script};
@@ -423,6 +424,37 @@ impl ClapTestHost {
         state
             .load(&plugin, &mut &bytes[..])
             .map_err(|e| format!("{e:?}"))
+    }
+
+    /// The plug-in's commands, through the kit's agent-commands extension.
+    ///
+    /// # Errors
+    ///
+    /// It doesn't offer the extension, or its list is broken.
+    pub fn commands(&mut self) -> Result<Vec<lspk_commands::CommandSpec>, String> {
+        let mut plugin = self.instance.plugin_handle();
+        let commands = plugin
+            .get_extension::<PluginAgentCommands>()
+            .ok_or("no agent-commands extension")?;
+        commands.list(&mut plugin)
+    }
+
+    /// Runs the plug-in's command `id` with `args` through the kit's
+    /// agent-commands extension, and returns its result.
+    ///
+    /// # Errors
+    ///
+    /// It doesn't offer the extension, or the command failed.
+    pub fn run_command(
+        &mut self,
+        id: &str,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let mut plugin = self.instance.plugin_handle();
+        let commands = plugin
+            .get_extension::<PluginAgentCommands>()
+            .ok_or("no agent-commands extension")?;
+        commands.run(&mut plugin, id, args)
     }
 
     /// Names the track the plug-in is on, as `track-info` reports it, and

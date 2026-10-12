@@ -44,10 +44,30 @@ impl Note {
     }
 }
 
+/// A per-note expression, as CLAP's note expressions name them. Each is a
+/// statement of value for the notes it targets, not a change to add.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Expression {
+    /// Gain, linear, from 0 to 4, where 1 is unchanged.
+    Volume,
+    /// Pan, from 0 (left) through 0.5 (centre) to 1 (right).
+    Pan,
+    /// Tuning in semitones, from −120 to +120, added to the note's pitch.
+    Tuning,
+    /// Vibrato depth, from 0 to 1.
+    Vibrato,
+    /// Expression, from 0 to 1.
+    Expression,
+    /// Brightness (MPE's timbre), from 0 to 1.
+    Brightness,
+    /// Pressure, from 0 to 1.
+    Pressure,
+}
+
 /// Something that happens at a frame in a block.
 ///
-/// More kinds will come (per-note expression, polyphonic modulation), so a
-/// processor matches the ones it handles and ignores the rest.
+/// More kinds will come (polyphonic modulation), so a processor matches the
+/// ones it handles and ignores the rest.
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum Event {
@@ -76,6 +96,30 @@ pub enum Event {
         /// Which notes.
         note: Note,
     },
+    /// A per-note expression takes a new value, for the notes `note`
+    /// names (by note ID, or by port, channel and key).
+    NoteExpression {
+        /// Its frame in the block.
+        time: u32,
+        /// Which notes.
+        note: Note,
+        /// Which expression.
+        expression: Expression,
+        /// Its new value, in the expression's own units.
+        value: f64,
+    },
+    /// A MIDI 1.0 channel message other than a note-on or note-off: pitch
+    /// bend, controllers, channel and polyphonic pressure. MPE arrives this
+    /// way too, as messages on its member channels.
+    Midi {
+        /// Its frame in the block.
+        time: u32,
+        /// The note port it came through.
+        port: u16,
+        /// The status byte and its two data bytes (a one-data-byte message
+        /// leaves the third at 0).
+        data: [u8; 3],
+    },
     /// A parameter takes a new value, in its own units.
     Param {
         /// Its frame in the block.
@@ -95,6 +139,8 @@ impl Event {
             Self::NoteOn { time, .. }
             | Self::NoteOff { time, .. }
             | Self::NoteChoke { time, .. }
+            | Self::NoteExpression { time, .. }
+            | Self::Midi { time, .. }
             | Self::Param { time, .. } => time,
         }
     }

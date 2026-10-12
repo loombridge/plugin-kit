@@ -194,8 +194,10 @@ fn interleave(source: &[Box<[f32]>], frames: usize, target: &mut [f32], channels
     }
 }
 
-/// `message` as the kit's event, at frame 0: notes on and off, and the
-/// channel-mode messages that silence a channel. Others are passed over.
+/// `message` as the kit's event, at frame 0: notes on and off, the
+/// channel-mode messages that silence a channel, and the other channel
+/// messages (pitch bend, controllers, pressure) as [`Event::Midi`]. System
+/// messages are passed over.
 #[must_use]
 pub fn midi_event(message: MidiMessage) -> Option<Event> {
     let [status, data1, data2] = message;
@@ -229,6 +231,11 @@ pub fn midi_event(message: MidiMessage) -> Option<Event> {
             time: 0,
             note: whole_channel,
             velocity: 0.0,
+        }),
+        0xa0..=0xe0 => Some(Event::Midi {
+            time: 0,
+            port: 0,
+            data: [status, data1 & 0x7f, data2 & 0x7f],
         }),
         _ => None,
     }
@@ -371,8 +378,19 @@ mod tests {
             midi_event([0xb0, 120, 0]),
             Some(Event::NoteChoke { .. })
         ));
-        assert_eq!(midi_event([0xb0, 7, 100]), None);
-        assert_eq!(midi_event([0xe0, 0, 64]), None);
+        assert_eq!(
+            midi_event([0xb0, 7, 100]),
+            Some(Event::Midi {
+                time: 0,
+                port: 0,
+                data: [0xb0, 7, 100]
+            })
+        );
+        assert!(matches!(
+            midi_event([0xe0, 0, 64]),
+            Some(Event::Midi { .. })
+        ));
+        assert_eq!(midi_event([0xf8, 0, 0]), None);
     }
 
     #[test]
