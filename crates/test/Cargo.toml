@@ -1,0 +1,12 @@
+[package]
+name = "lspk-test"
+description = "The headless test harness: renders, golden renders and null tests, measurement tools, format validators and a scripted MCP client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

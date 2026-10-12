@@ -1,0 +1,12 @@
+[package]
+name = "lspk-fx"
+description = "The effects library: each effect usable as a node inside a plug-in and as a plug-in of its own."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

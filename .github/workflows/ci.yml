@@ -1,0 +1,95 @@
+# Runs `cargo xtask check` on macOS (arm64), Windows (x64) and Linux (x64) for
+# every pull request and every push to main, and when started by hand
+# (`gh workflow run ci.yml --ref <branch>`).
+#
+# The workflow also:
+#
+# - cancels a run when a newer commit supersedes it;
+# - restores the dependency cache on every run, but saves it only from main,
+#   so pull requests share main's cache instead of filling the quota;
+# - times out a hung job after 30 minutes rather than the default six hours.
+#
+# A failure on one platform doesn't cancel the others (fail-fast is off), so
+# one run reports every platform's failures.
+#
+# Every third-party action is pinned to a full commit SHA, with its version in
+# a comment. Update the SHA and the comment together.
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: check (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-15
+          - name: Windows x64
+            os: windows-2025
+          - name: Linux x64
+            os: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # rustfmt.toml asks for Unix line endings, and the Windows runner's Git
+      # would otherwise check files out with CRLF, failing `cargo fmt --check`.
+      - name: Keep LF line endings
+        run: git config --global core.autocrlf false
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # With no argument, rustup installs the toolchain, profile and
+      # components named in rust-toolchain.toml.
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+          cargo --version
+
+      - name: Restore the dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      # cargo-nextest's version is pinned in xtask/src/main.rs and
+      # .config/nextest.toml too; keep the three in step.
+      - name: Install cargo-deny and cargo-nextest
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-deny@0.20.2,cargo-nextest@0.9.146
+          # A prebuilt, checksummed binary or nothing: never compile it here.
+          fallback: none
+
+      - name: cargo xtask check
+        env:
+          NEXTEST_PROFILE: ci
+        run: cargo xtask check

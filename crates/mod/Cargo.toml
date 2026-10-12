@@ -1,0 +1,12 @@
+[package]
+name = "lspk-mod"
+description = "The modulation engine: sources, destinations, depth, curves, bipolar and unipolar routes, per-voice and global, sample-accurate."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

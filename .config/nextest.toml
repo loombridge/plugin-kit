@@ -1,0 +1,16 @@
+# cargo-nextest's settings for `cargo xtask check`, which runs the tests with
+# it: every test in a process of its own, as many at once as the machine has
+# cores. Doctests run separately, with `cargo test --doc`.
+
+# Keep in step with NEXTEST_VERSION in xtask/src/main.rs and the CI workflow.
+nextest-version = "0.9.146"
+
+[profile.default]
+# One run reports every failure, as `cargo test --no-fail-fast` does.
+fail-fast = false
+
+# CI sets NEXTEST_PROFILE=ci: a failure's output prints as it happens and
+# again at the end of the log, where it's easy to find.
+[profile.ci]
+failure-output = "immediate-final"
+fail-fast = false

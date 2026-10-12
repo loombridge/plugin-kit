@@ -1,0 +1,12 @@
+[package]
+name = "lspk-commands"
+description = "The command registry: every user-facing action with its ID, label, model-facing description, permission class and argument and result schemas."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

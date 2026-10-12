@@ -1,0 +1,12 @@
+[package]
+name = "lspk-agent"
+description = "The agent interface: MCP over stdio and Streamable HTTP on loopback, tokens, origin checks, permission prompts, checkpoints and perception tools."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true

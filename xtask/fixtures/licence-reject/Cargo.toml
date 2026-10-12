@@ -1,0 +1,16 @@
+# Fixture for `cargo xtask deny-selftest`: an MIT crate that depends on a GPL,
+# an LGPL and an AGPL crate. The repository's deny.toml must reject all three.
+
+[package]
+name = "licence-reject"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+gpl = { path = "gpl" }
+lgpl = { path = "lgpl" }
+agpl = { path = "agpl" }
+
+[workspace]
