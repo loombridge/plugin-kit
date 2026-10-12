@@ -10,6 +10,8 @@
 //! | [`thd_n`] | THD plus noise: everything but the fundamental, over the fundamental | A least-squares fit of the fundamental (with DC), and the residual's RMS over the fit's |
 //! | [`aliasing`] | Energy away from a note's harmonics: what aliasing folds back, plus noise | spectra under the same window; the energy outside bands around each harmonic below Nyquist over the energy inside them, following a sweep frame by frame |
 //! | [`pitch`] | A periodic signal's fundamental, in hertz | YIN's cumulative mean normalised difference (de Cheveigné and Kawahara, 2002) for the period, refined over as many periods as the signal holds |
+//! | [`bands`], [`centroid`] | The spectrum in octave bands, as each band's RMS in dBFS; the spectral centroid in hertz | Welch-averaged power spectra under a Hann window, summed per band (Parseval) |
+//! | [`envelope`] | When a sound starts, peaks and dies away | RMS in 5 ms windows against the loudest window |
 //!
 //! Every function takes one channel's samples as `f32` and works in `f64`.
 
@@ -458,6 +460,170 @@ pub fn pitch(signal: &[f32], sample_rate: f64) -> Option<f64> {
     Some(sample_rate / period)
 }
 
+/// The centres of the octave bands [`bands`] measures, in hertz.
+pub const OCTAVE_BANDS: [f64; 10] = [
+    31.25, 62.5, 125.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0, 16_000.0,
+];
+
+/// How many frames each spectrum [`bands`] and [`centroid`] average covers.
+const SPECTRUM_FRAME: usize = 4_096;
+
+/// One octave band's level.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Band {
+    /// Its centre, in hertz; it spans half an octave either side.
+    pub centre: f64,
+    /// The RMS of what lies in it, in dBFS: a full-scale sine reads
+    /// −3.01 dBFS in its band. −∞ for nothing.
+    pub level_db: f64,
+}
+
+/// The power spectrum of `signal`, Welch-averaged over frames of
+/// [`SPECTRUM_FRAME`] (or the whole signal, if shorter) overlapping by
+/// half, under a Hann window, scaled so the bins above DC sum to the mean
+/// square. Returns each bin's power and the bin width in hertz.
+fn power_spectrum(signal: &[f32], sample_rate: f64) -> (Vec<f64>, f64) {
+    let frame = SPECTRUM_FRAME.min(signal.len());
+    if frame < 16 {
+        return (Vec::new(), 0.0);
+    }
+    let hop = frame / 2;
+    let window: Vec<f64> = (0..frame)
+        .map(|i| 0.5 - 0.5 * (TAU * i as f64 / frame as f64).cos())
+        .collect();
+    let energy: f64 = window.iter().map(|w| w * w).sum();
+    let mut planner = RealFftPlanner::<f64>::new();
+    let fft = planner.plan_fft_forward(frame);
+    let mut input = fft.make_input_vec();
+    let mut spectrum = fft.make_output_vec();
+    let mut power = vec![0.0; spectrum.len()];
+    let mut frames = 0usize;
+    let mut from = 0;
+    while from + frame <= signal.len() {
+        for ((slot, &x), &w) in input
+            .iter_mut()
+            .zip(&signal[from..from + frame])
+            .zip(&window)
+        {
+            *slot = f64::from(x) * w;
+        }
+        if fft.process(&mut input, &mut spectrum).is_err() {
+            break;
+        }
+        for (p, value) in power.iter_mut().zip(&spectrum) {
+            *p += value.norm_sqr();
+        }
+        frames += 1;
+        from += hop;
+    }
+    // One-sided, so every bin but DC and Nyquist counts twice.
+    let last = power.len() - 1;
+    let scale = 1.0 / (frames.max(1) as f64 * frame as f64 * energy);
+    for (k, p) in power.iter_mut().enumerate() {
+        *p *= if k == 0 || (k == last && frame.is_multiple_of(2)) {
+            scale
+        } else {
+            2.0 * scale
+        };
+    }
+    (power, sample_rate / frame as f64)
+}
+
+/// The level of `signal` in each octave band of [`OCTAVE_BANDS`] below
+/// Nyquist, as RMS in dBFS. The bands' powers sum to the signal's mean
+/// square above DC, so a sine reads its own RMS in its band.
+#[must_use]
+pub fn bands(signal: &[f32], sample_rate: f64) -> Vec<Band> {
+    let (power, bin) = power_spectrum(signal, sample_rate);
+    OCTAVE_BANDS
+        .iter()
+        .filter(|&&centre| centre / 2f64.sqrt() < sample_rate / 2.0)
+        .map(|&centre| {
+            let (low, high) = (centre / 2f64.sqrt(), centre * 2f64.sqrt());
+            let sum: f64 = power
+                .iter()
+                .enumerate()
+                .skip(1)
+                .filter(|(k, _)| {
+                    let f = *k as f64 * bin;
+                    // The lowest band reaches down to DC, the highest up to
+                    // Nyquist, so every bin above DC is in one band.
+                    (f >= low || centre == OCTAVE_BANDS[0]) && (f < high || centre == 16_000.0)
+                })
+                .map(|(_, p)| p)
+                .sum();
+            Band {
+                centre,
+                level_db: 10.0 * sum.log10(),
+            }
+        })
+        .collect()
+}
+
+/// The spectral centroid of `signal`: the power-weighted mean frequency,
+/// in hertz; `None` for silence.
+#[must_use]
+pub fn centroid(signal: &[f32], sample_rate: f64) -> Option<f64> {
+    let (power, bin) = power_spectrum(signal, sample_rate);
+    let total: f64 = power.iter().skip(1).sum();
+    if total <= 0.0 {
+        return None;
+    }
+    let weighted: f64 = power
+        .iter()
+        .enumerate()
+        .skip(1)
+        .map(|(k, p)| k as f64 * bin * p)
+        .sum();
+    Some(weighted / total)
+}
+
+/// When a sound starts, peaks and dies away, as [`envelope`] measures it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Envelope {
+    /// When it first comes within 40 dB of its loudest, in seconds.
+    pub onset: f64,
+    /// When it first comes within 1 dB of its loudest, in seconds: the end
+    /// of its attack.
+    pub peak: f64,
+    /// Its loudest level: the RMS of its loudest window, in dBFS.
+    pub peak_db: f64,
+    /// When it has fallen for good to 60 dB below its loudest, in seconds;
+    /// the signal's length if it never does.
+    pub end: f64,
+}
+
+/// How long each window [`envelope`] measures is, in seconds.
+pub const ENVELOPE_WINDOW: f64 = 0.005;
+
+/// The envelope of `signal`, from its RMS in windows of
+/// [`ENVELOPE_WINDOW`]: when it starts, peaks and has died away. `None`
+/// for silence.
+#[must_use]
+pub fn envelope(signal: &[f32], sample_rate: f64) -> Option<Envelope> {
+    let window = ((ENVELOPE_WINDOW * sample_rate).round() as usize).max(1);
+    let levels: Vec<f64> = signal.chunks(window).map(|w| db(rms(w))).collect();
+    let peak_db = levels.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    if !peak_db.is_finite() {
+        return None;
+    }
+    let loudest = levels.iter().position(|&l| l >= peak_db - 1.0)?;
+    let seconds = |index: usize| (index * window) as f64 / sample_rate;
+    let onset = levels.iter().position(|&l| l >= peak_db - 40.0)?;
+    let end = levels
+        .iter()
+        .rposition(|&l| l >= peak_db - 60.0)
+        .map_or(signal.len() as f64 / sample_rate, |last| {
+            (seconds(last + 1)).min(signal.len() as f64 / sample_rate)
+        });
+    Some(Envelope {
+        onset: seconds(onset),
+        peak: seconds(loudest),
+        peak_db,
+        end,
+    })
+}
+
 /// Where a parabola through three equally spaced points has its vertex,
 /// from the middle point, in samples: from −0.5 to 0.5.
 fn parabola(before: f64, at: f64, after: f64) -> f64 {
@@ -634,5 +800,45 @@ mod tests {
         assert!((measured - 220.0).abs() < 0.01, "{measured}");
         assert_eq!(pitch(&noise(9, 48_000, 0.5), RATE), None);
         assert_eq!(pitch(&[0.0; 10], RATE), None);
+    }
+    #[test]
+    fn a_sine_reads_its_rms_in_its_band() {
+        let tone = sine(1_000.0, 48_000.0, 48_000, 1.0);
+        let bands = bands(&tone, 48_000.0);
+        assert_eq!(bands.len(), 10);
+        let loudest = bands
+            .iter()
+            .max_by(|a, b| a.level_db.total_cmp(&b.level_db))
+            .expect("bands");
+        assert_eq!(loudest.centre, 1_000.0);
+        assert!((loudest.level_db + 3.01).abs() < 0.05, "{loudest:?}");
+        let centroid = centroid(&tone, 48_000.0).expect("a centroid");
+        assert!((centroid - 1_000.0).abs() < 5.0, "{centroid}");
+        assert_eq!(super::centroid(&[0.0; 8_192], 48_000.0), None);
+    }
+
+    #[test]
+    fn an_envelope_finds_the_start_peak_and_end() {
+        let rate = 48_000.0;
+        let mut signal = vec![0.0f32; 4_800];
+        let mut tone = sine(440.0, rate, 24_000, 0.5);
+        // A 50 ms rise, then a hold, then silence.
+        for (i, s) in tone.iter_mut().take(2_400).enumerate() {
+            *s *= i as f32 / 2_400.0;
+        }
+        signal.extend(tone);
+        signal.extend(vec![0.0; 9_600]);
+        let envelope = envelope(&signal, rate).expect("an envelope");
+        assert!((envelope.onset - 0.1).abs() < 0.006, "{envelope:?}");
+        assert!(
+            envelope.peak > 0.135 && envelope.peak < 0.155,
+            "{envelope:?}"
+        );
+        assert!(
+            (envelope.peak_db - db(0.5 / 2f64.sqrt())).abs() < 0.5,
+            "{envelope:?}"
+        );
+        assert!((envelope.end - 0.6).abs() < 0.006, "{envelope:?}");
+        assert_eq!(super::envelope(&[0.0; 960], rate), None);
     }
 }

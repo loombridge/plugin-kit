@@ -36,6 +36,7 @@ clack-extensions = { version = "=0.2.0", optional = true, features = [
     "params",
     "state",
     "tail",
+    "track-info",
 ] }
 lspk-clap-wrapper = { workspace = true, optional = true }
 
