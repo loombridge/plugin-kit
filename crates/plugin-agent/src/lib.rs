@@ -147,6 +147,10 @@ impl<P: Plugin> Plugin for WithAgent<P> {
         self.plugin.params()
     }
 
+    fn param_space(&self) -> Option<lspk_params::ParamSpace> {
+        self.plugin.param_space()
+    }
+
     fn activate(
         &mut self,
         config: &ProcessConfig,

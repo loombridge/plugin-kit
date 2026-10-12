@@ -32,7 +32,7 @@ use egui::{
     Align2, Event, EventFilter, Id, Key, Rect, Response, Sense, Shape, Stroke, StrokeKind, Ui,
     WidgetInfo, WidgetType, pos2, vec2,
 };
-use lspk_params::{ParamDescriptor, ParamId, ParamKind};
+use lspk_params::{ParamDescriptor, ParamId, ParamKind, ParamView};
 use lspk_plugin::EditorContext;
 
 use crate::theme::Theme;
@@ -105,7 +105,9 @@ pub fn end_open_gestures(ctx: &egui::Context, cx: &EditorContext) {
 
 /// Draws the control for the parameter at `index` in `cx`'s order, filling
 /// `rect`: its name above, the control, and its value. Returns the
-/// control's response.
+/// control's response. A parameter of a slot is drawn as its slot's current
+/// module describes it ([`EditorContext::values`]' view), with its real
+/// name, range and value text.
 ///
 /// # Panics
 ///
@@ -118,15 +120,19 @@ pub fn param_control(
     rect: Rect,
 ) -> Response {
     let values = cx.values();
-    let descriptor = &values.descriptors()[index];
+    let stored = &values.descriptors()[index];
+    let view = values
+        .view(stored.id)
+        .unwrap_or_else(|| ParamView::plain(stored));
     let control = Control {
         cx,
         theme,
-        d: descriptor,
-        value: values.value_at(index),
-        id: control_id(descriptor.id),
+        d: &view.descriptor,
+        value: view.real(values.value_at(index)),
+        carried: view.carried,
+        id: control_id(stored.id),
         rect,
-        kind: ControlKind::for_param(descriptor),
+        kind: ControlKind::for_param(&view.descriptor),
     };
     control.show(ui)
 }
@@ -172,7 +178,10 @@ struct Control<'a> {
     cx: &'a EditorContext,
     theme: &'a Theme,
     d: &'a ParamDescriptor,
+    /// Its real value, in `d`'s units.
     value: f64,
+    /// Whether the value kept for it is its travel (a slot's parameter).
+    carried: bool,
     id: Id,
     rect: Rect,
     kind: ControlKind,
@@ -506,7 +515,7 @@ impl Control<'_> {
             });
             let value = d.denormalize((drag.start + drag.moved).clamp(0.0, 1.0));
             if dy != 0.0 && value != self.value {
-                let _ = self.cx.set_param(d.id, value);
+                let _ = self.cx.set_param(d.id, self.stored(value));
             }
         }
         if response.drag_stopped() {
@@ -598,7 +607,16 @@ impl Control<'_> {
     /// Sets the value in one gesture, if it changes.
     fn edit(&self, value: f64) {
         if self.d.clamp(value) != self.value {
-            let _ = self.cx.edit(self.d.id, value);
+            let _ = self.cx.edit(self.d.id, self.stored(value));
+        }
+    }
+
+    /// The value kept for the real value `value`.
+    fn stored(&self, value: f64) -> f64 {
+        if self.carried {
+            self.d.normalize(value)
+        } else {
+            value
         }
     }
 

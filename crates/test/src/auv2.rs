@@ -1,7 +1,9 @@
 //! An Audio Unit (v2) host for tests, on macOS: registers a plug-in's Audio
 //! Unit factory in the test process, makes an instance, renders blocks, and
 //! records the parameter notifications it sends listeners (its gestures and
-//! value changes), as a host such as Logic hears them.
+//! value changes), as a host such as Logic hears them, and the property
+//! changes it reports (its parameter list and parameter info, which a
+//! parameter rescan changes).
 //!
 //! The factory is the plug-in's `GetPluginFactoryAUV2`, which
 //! `lspk_plugin::export_clap!` exports with the `auv2` feature; a test that
@@ -26,6 +28,22 @@ pub enum AuEvent {
     End(u32),
 }
 
+/// A parameter, as the Audio Unit describes it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AuParam {
+    /// Its name.
+    pub name: String,
+    /// Its lowest value.
+    pub min: f32,
+    /// Its highest value.
+    pub max: f32,
+    /// Its default.
+    pub default: f32,
+    /// Whether a host may set it: a hidden parameter is neither readable
+    /// nor writable.
+    pub writable: bool,
+}
+
 /// An Audio Unit instance, hosted for a test.
 pub struct AuTestHost {
     unit: AudioUnit,
@@ -33,6 +51,8 @@ pub struct AuTestHost {
     /// What the listener heard, boxed so its callback can keep a pointer
     /// to it.
     events: Box<RefCell<Vec<AuEvent>>>,
+    /// The properties the Audio Unit said changed, boxed likewise.
+    properties: Box<RefCell<Vec<u32>>>,
     channels: usize,
     sample_time: f64,
     initialized: bool,
@@ -111,10 +131,26 @@ impl AuTestHost {
                 u32::try_from(std::mem::size_of::<RenderCallback>()).unwrap_or(16),
             );
         }
+        let properties = Box::new(RefCell::new(Vec::new()));
+        for property in [PARAMETER_LIST, PARAMETER_INFO] {
+            // SAFETY: the Audio Unit's own call, with a callback that gets
+            // `properties`, which lives as long as the instance.
+            unsafe {
+                AudioUnitAddPropertyListener(
+                    unit,
+                    property,
+                    property_changed,
+                    std::ptr::from_ref::<RefCell<Vec<u32>>>(&properties)
+                        .cast_mut()
+                        .cast(),
+                );
+            }
+        }
         let host = Self {
             unit,
             listener,
             events,
+            properties,
             channels: 2,
             sample_time: 0.0,
             initialized: false,
@@ -174,6 +210,102 @@ impl AuTestHost {
         }
         ids.truncate(size as usize / 4);
         ids
+    }
+
+    /// Parameter `id`, as the Audio Unit describes it now.
+    #[must_use]
+    pub fn param(&self, id: u32) -> Option<AuParam> {
+        // SAFETY: a zeroed `AudioUnitParameterInfo` is valid.
+        let mut info: ParameterInfo = unsafe { std::mem::zeroed() };
+        let mut size = u32::try_from(std::mem::size_of::<ParameterInfo>()).ok()?;
+        // SAFETY: the Audio Unit's own call, with a buffer of the
+        // property's size.
+        let result = unsafe {
+            AudioUnitGetProperty(
+                self.unit,
+                PARAMETER_INFO,
+                GLOBAL,
+                id,
+                std::ptr::from_mut(&mut info).cast(),
+                &mut size,
+            )
+        };
+        if result != 0 {
+            return None;
+        }
+        let name = if info.flags & HAS_CF_NAME != 0 && !info.cf_name.is_null() {
+            // SAFETY: a CFString the Audio Unit gave, released once if it
+            // asks.
+            let name = unsafe { cf_text(info.cf_name) };
+            if info.flags & CF_NAME_RELEASE != 0 {
+                // SAFETY: as above.
+                unsafe { CFRelease(info.cf_name) };
+            }
+            name
+        } else {
+            let bytes: Vec<u8> = info
+                .name
+                .iter()
+                .take_while(|c| **c != 0)
+                .map(|c| *c as u8)
+                .collect();
+            String::from_utf8_lossy(&bytes).into_owned()
+        };
+        Some(AuParam {
+            name,
+            min: info.min,
+            max: info.max,
+            default: info.default,
+            writable: info.flags & IS_WRITABLE != 0,
+        })
+    }
+
+    /// How the Audio Unit shows parameter `id` at `value`.
+    #[must_use]
+    pub fn text(&self, id: u32, value: f32) -> Option<String> {
+        let mut request = StringFromValue {
+            id,
+            value: &value,
+            text: std::ptr::null(),
+        };
+        let mut size = u32::try_from(std::mem::size_of::<StringFromValue>()).ok()?;
+        // SAFETY: the Audio Unit's own call, with a request of the
+        // property's size; it gives a CFString we release.
+        unsafe {
+            let result = AudioUnitGetProperty(
+                self.unit,
+                PARAMETER_STRING_FROM_VALUE,
+                GLOBAL,
+                0,
+                std::ptr::from_mut(&mut request).cast(),
+                &mut size,
+            );
+            if result != 0 || request.text.is_null() {
+                return None;
+            }
+            let text = cf_text(request.text);
+            CFRelease(request.text);
+            Some(text)
+        }
+    }
+
+    /// Runs this thread's run loop until the Audio Unit has said its
+    /// property `property` changed (`3`, the parameter list, or `4`, the
+    /// parameter info), or `timeout` passes; returns whether it did, and
+    /// forgets the changes heard so far.
+    pub fn wait_for_property(&mut self, property: u32, timeout: Duration) -> bool {
+        let start = Instant::now();
+        loop {
+            if self.properties.borrow().contains(&property) {
+                self.properties.borrow_mut().clear();
+                return true;
+            }
+            if start.elapsed() >= timeout {
+                return false;
+            }
+            // SAFETY: running this thread's run loop briefly.
+            unsafe { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.02, 0) };
+        }
     }
 
     /// Parameter `id`'s value.
@@ -390,6 +522,46 @@ unsafe extern "C" fn listen(
     }
 }
 
+/// The property listener's callback: records each property that changed.
+unsafe extern "C" fn property_changed(
+    sink: *mut c_void,
+    _unit: AudioUnit,
+    property: u32,
+    _scope: u32,
+    _element: u32,
+) {
+    // SAFETY: `sink` is the boxed list `AuTestHost` keeps while the
+    // instance lives.
+    let sink = unsafe { &*sink.cast::<RefCell<Vec<u32>>>() };
+    if let Ok(mut properties) = sink.try_borrow_mut() {
+        properties.push(property);
+    }
+}
+
+/// A CFString's text.
+///
+/// # Safety
+///
+/// `text` is a CFString.
+unsafe fn cf_text(text: *const c_void) -> String {
+    let mut buffer = [0u8; 512];
+    // SAFETY: as the caller promises, a CFString, and a buffer of the size
+    // given.
+    let ok = unsafe {
+        CFStringGetCString(
+            text,
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as isize,
+            UTF8,
+        )
+    };
+    if ok == 0 {
+        return String::new();
+    }
+    let end = buffer.iter().position(|b| *b == 0).unwrap_or(buffer.len());
+    String::from_utf8_lossy(&buffer[..end]).into_owned()
+}
+
 /// The input callback: silence on every buffer.
 unsafe extern "C" fn silence(
     _ref_con: *mut c_void,
@@ -437,6 +609,11 @@ const INPUT: u32 = 1;
 const SET_RENDER_CALLBACK: u32 = 23;
 const CLASS_INFO: u32 = 0;
 const PARAMETER_LIST: u32 = 3;
+const PARAMETER_INFO: u32 = 4;
+const PARAMETER_STRING_FROM_VALUE: u32 = 33;
+const IS_WRITABLE: u32 = 1 << 31;
+const HAS_CF_NAME: u32 = 1 << 27;
+const CF_NAME_RELEASE: u32 = 1 << 4;
 const MAXIMUM_FRAMES_PER_SLICE: u32 = 14;
 const VALUE_CHANGE: u32 = 0;
 const BEGIN_GESTURE: u32 = 1;
@@ -451,6 +628,30 @@ struct AudioComponentDescription {
     component_flags: u32,
     component_flags_mask: u32,
 }
+
+/// `AudioUnitParameterInfo`.
+#[repr(C)]
+struct ParameterInfo {
+    name: [std::ffi::c_char; 52],
+    unit_name: *const c_void,
+    clump_id: u32,
+    cf_name: *const c_void,
+    unit: u32,
+    min: f32,
+    max: f32,
+    default: f32,
+    flags: u32,
+}
+
+/// `AudioUnitParameterStringFromValue`.
+#[repr(C)]
+struct StringFromValue {
+    id: u32,
+    value: *const f32,
+    text: *const c_void,
+}
+
+type PropertyListenerProc = unsafe extern "C" fn(*mut c_void, AudioUnit, u32, u32, u32);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -617,6 +818,12 @@ unsafe extern "C" {
         event: *const AudioUnitEvent,
     ) -> i32;
     fn AUListenerDispose(listener: *mut c_void) -> i32;
+    fn AudioUnitAddPropertyListener(
+        unit: AudioUnit,
+        id: u32,
+        proc_: PropertyListenerProc,
+        user_data: *mut c_void,
+    ) -> i32;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -630,4 +837,10 @@ unsafe extern "C" {
         encoding: u32,
     ) -> *const c_void;
     fn CFRelease(object: *const c_void);
+    fn CFStringGetCString(
+        text: *const c_void,
+        buffer: *mut std::ffi::c_char,
+        size: isize,
+        encoding: u32,
+    ) -> u8;
 }
