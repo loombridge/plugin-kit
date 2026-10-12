@@ -4,7 +4,7 @@ The plug-in kit is a set of Rust crates for building audio plug-ins: real-time s
 
 [Reagent](https://github.com/loombridge/reagent), a wavetable synthesiser, is the first plug-in built on it.
 
-The plug-in kit is in early development: `lspk-rt`, `lspk-params` and `lspk-commands` hold working code, every other crate is still a stub, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
+The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands` and `lspk-agent` hold working code, every other crate is still a stub, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
 
 ## Crates
 

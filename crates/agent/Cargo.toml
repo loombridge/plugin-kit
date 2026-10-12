@@ -1,12 +1,24 @@
 [package]
 name = "lspk-agent"
-description = "The agent interface: MCP over stdio and Streamable HTTP on loopback, tokens, origin checks, permission prompts, checkpoints and perception tools."
+description = "The agent interface: MCP over stdio and Streamable HTTP on loopback, tokens, host and origin checks, sessions, permission prompts and calls that wait."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 repository.workspace = true
 publish.workspace = true
+
+[dependencies]
+# Permission classes, and tools' input schemas.
+lspk-commands.workspace = true
+# Session IDs from the operating system's secure random source.
+getrandom = "0.3.4"
+# Pinned to lspk-commands' version: the tools' input schemas come from it.
+schemars = { version = "=1.2.2", default-features = false, features = ["std", "derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+serde = { version = "1.0.228", default-features = false, features = ["std", "derive"] }
 
 [lints]
 workspace = true
