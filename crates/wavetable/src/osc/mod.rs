@@ -571,6 +571,27 @@ impl Oscillator {
         &mut self.lanes.frame_offset
     }
 
+    /// Sets lanes `lanes`' unison offsets: pitch from `pitch`, in
+    /// semitones, and frame from `frame`, in half tables (scaled here by
+    /// half the table's frame count less one), each read at the same lane
+    /// index, as `lspk-voice`'s unison lanes give them (R33, R38). Set them
+    /// again after [`set_table`](Self::set_table) changes the frame count.
+    ///
+    /// # Panics
+    ///
+    /// If `lanes` reaches past [`lane_count`](Self::lane_count) or either
+    /// slice.
+    pub fn set_unison(&mut self, lanes: std::ops::Range<usize>, pitch: &[f32], frame: &[f32]) {
+        let half = (self.table.frame_count() as f32 - 1.0) / 2.0;
+        self.lanes.pitch_offset[lanes.clone()].copy_from_slice(&pitch[lanes.clone()]);
+        for (to, &from) in self.lanes.frame_offset[lanes.clone()]
+            .iter_mut()
+            .zip(&frame[lanes])
+        {
+            *to = from * half;
+        }
+    }
+
     /// The stored start phase of each unison copy in [`PhaseMode::PerVoice`],
     /// in degrees; all 0 at first (R19).
     pub fn voice_phases_mut(&mut self) -> &mut [f32; MAX_UNISON] {

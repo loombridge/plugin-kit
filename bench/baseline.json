@@ -229,6 +229,10 @@
     "lspk-mod/empty-32": 100,
     "lspk-mod/mixed-64x32": 912787,
     "lspk-voice/allocation/heavy-traffic": 192266,
+    "lspk-voice/unison-mix/32x16/scalar": 710721,
+    "lspk-voice/unison-mix/32x16/simd": 170372,
+    "lspk-voice/unison-mix/8x7/scalar": 100929,
+    "lspk-voice/unison-mix/8x7/simd": 34396,
     "lspk-voice/voice-loop/32-sines": 264719,
     "lspk-voice/voice-loop/32-voices": 151992,
     "lspk-wavetable/load/256-frames": 249621236,
@@ -239,10 +243,14 @@
     "lspk-wavetable/osc/32-voices/simd": 267095,
     "lspk-wavetable/osc/one-voice/scalar": 68575,
     "lspk-wavetable/osc/one-voice/simd": 67076,
-    "lspk-wavetable/read/block": 36911
+    "lspk-wavetable/read/block": 36911,
+    "lspk-wavetable/unison/32x16/scalar": 9552811,
+    "lspk-wavetable/unison/32x16/simd": 1274970,
+    "lspk-wavetable/unison/8x7/scalar": 1080963,
+    "lspk-wavetable/unison/8x7/simd": 168373
   },
   "platform": "x86_64-linux",
-  "reason": "R1.10 adds a benchmark for each of the 78 new filter types, scalar and SIMD (156); R1.9's filter counts move by -2.7 % to +2.2 % with the type list's new scaffolding",
+  "reason": "R1.7 adds unison's benchmarks: lspk-wavetable's 8 voices of 7 copies and 32 of 16, rendered and mixed to stereo, and lspk-voice's mix alone, each scalar and in SIMD (at AVX2, 19.5 instructions per voice-copy sample for 32 x 16 against 146 scalar; the mix alone 2.6). Their counts are from CI on the branch; every other count is main's, with R1.10's filter benchmarks.",
   "simd": "avx2",
   "valgrind": "valgrind-3.22.0"
 }
