@@ -21,10 +21,13 @@
     "lspk-example-sine/one-voice/create": 4979,
     "lspk-example-sine/one-voice/idle": 636375,
     "lspk-example-sine/one-voice/load-state": 1081,
-    "lspk-example-sine/one-voice/process": 7578149
+    "lspk-example-sine/one-voice/process": 7578149,
+    "lspk-voice/allocation/heavy-traffic": 192266,
+    "lspk-voice/voice-loop/32-sines": 264345,
+    "lspk-voice/voice-loop/32-voices": 151992
   },
   "platform": "x86_64-linux",
-  "reason": "R0.14: making an instance now asks the plug-in for its parameter space and the host link keeps the slots' selection, and loading state checks whether a slot changed its module; about 200 instructions more to create an instance and 35 more to load state, on the main thread only. Processing is unchanged.",
+  "reason": "R1.6 adds lspk-voice's micro-benchmarks, counted by CI: allocation and stealing under heavy note traffic, the voice loop alone with 32 gliding, bending voices, and the same with a sine per voice as SIMD lanes.",
   "simd": "avx2",
   "valgrind": "valgrind-3.22.0"
 }
