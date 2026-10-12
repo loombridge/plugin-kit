@@ -8,5 +8,19 @@ license = "MIT OR Apache-2.0"
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+# Parameter smoothing (`smooth`), re-exported.
+lspk-params.workspace = true
+
+[dev-dependencies]
+# The micro-benchmarks' suite format.
+lspk-test.workspace = true
+
+# Micro-benchmarks for the hot paths, run by `cargo xtask bench` (timing) and
+# counted by its instruction-count gate.
+[[bench]]
+name = "perf"
+harness = false
+
 [lints]
 workspace = true
