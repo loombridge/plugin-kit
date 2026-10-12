@@ -1,0 +1,53 @@
+# AGENTS.md
+
+Shared context for any agent or person working in this repository. Keep it current and short; private notes belong in your own memory, not here.
+
+## What this is
+
+{{#instrument}}
+{{Name}} is a polyphonic instrument
+{{/instrument}}
+{{#effect}}
+{{Name}} is a stereo effect
+{{/effect}}
+written in Rust for macOS (Apple Silicon), Windows and Linux, built on the plug-in kit (`loombridge/plugin-kit`, the `lspk-` crates). It ships as CLAP, VST3 and Audio Unit plug-ins, as a standalone app, and as a native Beatlayer device. Anything a second plug-in would need belongs in the kit; this repository holds only what makes {{Name}} itself.
+
+## Read first
+
+1. [README.md](README.md): what {{Name}} is and how to build it.
+2. [CONTRIBUTING.md](CONTRIBUTING.md): how a change gets into `main`, the licence rule, and the certificate outside contributors give.
+
+## Lines not crossed
+
+{{#permissive}}
+- {{Name}} is MIT OR Apache-2.0. No copyleft dependency (`cargo deny` rejects GPL, LGPL and AGPL), and no code ported or derived from GPL projects.
+{{/permissive}}
+{{#gpl}}
+- {{Name}} is GPL-3.0-or-later. Code ported from GPL projects carries a header comment naming its source, and never goes into the plug-in kit.
+{{/gpl}}
+- Every user-facing action is a registered command with a schema, a description and a permission class, so agents reach every feature through the agent interface.
+- No allocation, lock or blocking call on an audio thread. The tests run the plug-in under the kit's allocation trap.
+- Parameter IDs never change meaning: `crates/{{crate}}/tests/ids.txt` keeps every ID published, and may only be added to.
+- Every feature has a headless test path.
+- No plug-in binaries, SDK binaries or third-party audio in the repository. Test audio is made by code.
+- No `git add -A`.
+
+## How work is done
+
+Before a pull request, `cargo xtask check` and `cargo xtask validate` must pass on macOS locally, with their summaries pasted in the pull request, as must Windows clippy (`CARGO_FEATURE_PURE=1 cargo clippy --workspace --all-targets --all-features --locked --target x86_64-pc-windows-msvc -- -D warnings`). CI runs both on macOS, Windows and Linux on every pull request and every push to `main`.
+
+`cargo xtask` is the plug-in kit's: `xtask/src/main.rs` only tells the kit's tasks about this repository (`lspk_xtask::Repo`). A change to a task belongs in the kit.
+
+Golden renders: `crates/{{crate}}/tests/golden.rs` null-tests renders against the references in `tests/golden/`. When a change to the sound is intended, remake them with `cargo xtask golden --update` and say why in the pull request.
+
+Parameters: add a parameter to `space()` with a new number (never reuse one), run `LSPK_IDS_UPDATE=1 cargo test -p {{crate}} --test ids`, and commit `tests/ids.txt`.
+
+Performance is checked on every pull request. The benchmarks live in `crates/{{crate}}/benches/perf.rs` (the format is `lspk_test::bench`). CI counts every benchmark's instructions with Valgrind on Linux x86-64 (`cargo xtask bench --gate`) and fails a pull request that makes any of them more than 3 % slower than `bench/baseline.json`, or adds or removes one without updating it. When a slowdown is intended, or a speed-up should tighten the gate, update the baseline with `cargo xtask bench --update-baseline --reason "..."`, on x86-64 Linux or anywhere with `--from <file>` holding the counts the CI job prints, commit `bench/baseline.json`, and say why in the pull request. `cargo xtask bench` times every benchmark locally.
+
+{{Name}} depends on the plug-in kit by git revision (`rev` in the workspace `Cargo.toml`). A change that needs the kit lands in the kit first; [CONTRIBUTING.md](CONTRIBUTING.md#working-on-the-plug-in-kit-and-{{crate}}-at-once) explains working on both at once. Moving to a newer kit can move the golden renders and the benchmark counts; update them in the same pull request and say so.
+
+Commits: the project's own commits are authored as `Loombridge <code@loombridge.io>`. Set it once per checkout: `git config user.name Loombridge && git config user.email code@loombridge.io`. Outside contributors commit under their own names with the Developer Certificate of Origin ([CONTRIBUTING.md](CONTRIBUTING.md)).
+
+Merging: a maintainer merges a pull request when `cargo xtask check` and CI pass, review finds no blocker, and the evidence is complete.
+
+One-time setup: install Rust with rustup (the repository pins the toolchain in `rust-toolchain.toml`), then `cargo install --locked cargo-deny` and `cargo install --locked cargo-nextest@{{nextest}}`.
