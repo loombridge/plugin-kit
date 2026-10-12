@@ -9,9 +9,11 @@
 //! entry point ([`ClapTestHost::from_entry`]) to check the plug-in too.
 
 use std::cell::Cell;
+use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::{Mutex, PoisonError};
 
 use clack_extensions::audio_ports::{AudioPortInfoBuffer, PluginAudioPorts};
 use clack_extensions::latency::{HostLatency, HostLatencyImpl, PluginLatency};
@@ -619,13 +621,19 @@ fn plugin_event(event: &UnknownEvent) -> PluginEvent {
 
 /// The plug-in, as a CLAP file made from a plug-in crate's `cdylib` that
 /// Cargo built beside the running test binary: `<name>.clap`, in a folder
-/// of this process's own under the build folder.
+/// of this process's own under the build folder. It's written once per
+/// process, since a loaded library can't be replaced on Windows.
 ///
 /// # Panics
 ///
 /// If the library isn't there or the file can't be written.
 #[must_use]
 pub fn bundle_built_library(lib_name: &str, name: &str, id: &str) -> PathBuf {
+    static WRITTEN: Mutex<BTreeMap<String, PathBuf>> = Mutex::new(BTreeMap::new());
+    let mut written = WRITTEN.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(clap) = written.get(lib_name) {
+        return clap.clone();
+    }
     let library = built_library(lib_name);
     let target = library
         .ancestors()
@@ -635,7 +643,9 @@ pub fn bundle_built_library(lib_name: &str, name: &str, id: &str) -> PathBuf {
     let dir = target
         .join("clap-tests")
         .join(std::process::id().to_string());
-    lspk_plugin::bundle::write_clap(&library, &dir, name, id).expect("the CLAP file")
+    let clap = lspk_plugin::bundle::write_clap(&library, &dir, name, id).expect("the CLAP file");
+    written.insert(lib_name.to_owned(), clap.clone());
+    clap
 }
 
 /// The newest library `lib_name` Cargo built beside the running test
