@@ -4,7 +4,7 @@ The plug-in kit is a set of Rust crates for building audio plug-ins: real-time s
 
 [Reagent](https://github.com/loombridge/reagent), a wavetable synthesiser, is the first plug-in built on it.
 
-The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands`, `lspk-agent` and `lspk-plugin` (with its CLAP export) hold working code, `lspk-test` holds a CLAP host for tests, every other crate is still a stub, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
+The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands`, `lspk-agent`, `lspk-plugin` (with its CLAP export) and `lspk-test` (the headless test harness) hold working code, every other crate is still a stub, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
 
 ## Crates
 
@@ -50,6 +50,14 @@ Two example plug-ins under `examples/`, never published, show the `Plugin` trait
    ```sh
    cargo xtask bundle lspk-example-gain lspk-example-sine
    clap-validator validate target/bundle/*.clap
+   ```
+
+   `cargo xtask validate` does both for the example plug-ins, as CI does.
+
+1. Golden renders are null-tested by `cargo xtask check`. When a change to a plug-in's sound is intended, remake its references and say why in the pull request:
+
+   ```sh
+   cargo xtask golden --update
    ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request.
