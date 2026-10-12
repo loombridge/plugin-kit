@@ -3,8 +3,12 @@
 //!
 //! - **CLAP**, natively, through `clack`: [`export_clap!`] in the plug-in's
 //!   `cdylib` crate (the `clap` feature, on by default).
-//! - **VST3 and Audio Unit v2** are made from the CLAP build with
-//!   `clap-wrapper` (R0.6), so they need nothing more from a plug-in.
+//! - **VST3 and Audio Unit v2** (macOS), made from the CLAP export by
+//!   free-audio's clap-wrapper (`lspk-clap-wrapper`): the `vst3` and `auv2`
+//!   features, with which [`export_clap!`] also exports their entry points
+//!   from the same library. They need nothing more from a plug-in.
+//!   [`bundle`] lays the library out as each format's bundle, as
+//!   `cargo xtask bundle` does.
 //! - **A standalone app** (R0.7) and **a native Beatlayer device** (R0.8)
 //!   drive the same two traits through their own adapters, with
 //!   [`ParamValues`], a [`HostBackend`], [`Events::from_slice`] and an
@@ -75,9 +79,16 @@ use std::fmt;
 /// Every method runs on the host's main thread. Which later work package
 /// fills what, without changing this trait:
 ///
-/// - **R0.6, VST3 and Audio Unit v2:** made from the CLAP build by
-///   `clap-wrapper`, which maps [`PluginInfo::features`] to their
-///   categories and the gestures to their edit notifications.
+/// - **VST3 and Audio Unit v2:** made from the CLAP export by
+///   clap-wrapper (the `vst3` and `auv2` features), which maps
+///   [`PluginInfo::features`] to their categories, and the gestures to
+///   VST3's `beginEdit`, `performEdit` and `endEdit` and Audio Units'
+///   parameter gesture and change notifications. An edit made while a VST3
+///   or Audio Unit instance is inactive reaches the host with its first
+///   block once active. On Linux, clap-wrapper sends a VST3 host the
+///   gestures only while the plug-in's editor is open, since it gets its
+///   idle timer from the editor's run loop; without one, the values still
+///   reach the host, as output parameter changes from `process`.
 /// - **R0.7, standalone:** an adapter that calls [`Plugin::activate`] and
 ///   [`Processor::process`] from an audio device's callback, with a
 ///   [`HostBackend`] of its own.

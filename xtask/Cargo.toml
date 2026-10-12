@@ -15,6 +15,9 @@ path = "src/main.rs"
 [dependencies]
 # Lays out plug-in files for `cargo xtask bundle`; no format export needed.
 lspk-plugin.workspace = true
+# Reads each plug-in's CLAP descriptor for `cargo xtask bundle`, pinned as
+# lspk-test pins it.
+clack-host = "=0.2.0"
 serde_json = "1"
 
 [lints]

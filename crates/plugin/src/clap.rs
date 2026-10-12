@@ -62,13 +62,116 @@ use crate::params::ParamValues;
 use crate::{Plugin, ProcessConfig, ProcessStatus, Processor, Tail, state};
 
 /// Exports `$plugin`, a type implementing [`Plugin`](crate::Plugin), as
-/// this library's CLAP entry point (`clap_entry`). Use it once, in the
-/// plug-in's `cdylib` crate.
+/// this library's CLAP entry point (`clap_entry`), and, with the `vst3` and
+/// `auv2` features, the VST3 (`GetPluginFactory` and the platform's module
+/// calls) and Audio Unit (`GetPluginFactoryAUV2`) entry points clap-wrapper
+/// makes from it. Use it once, in the plug-in's `cdylib` crate.
 #[macro_export]
 macro_rules! export_clap {
     ($plugin:ty) => {
         $crate::clap::__export_entry!($crate::clap::ClapEntry<$plugin>);
+        $crate::__export_vst3!();
+        $crate::__export_auv2!();
     };
+}
+
+/// With the `vst3` feature, exports the VST3 entry points clap-wrapper makes
+/// from `clap_entry`; part of [`export_clap!`](crate::export_clap).
+#[cfg(feature = "vst3")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __export_vst3 {
+    () => {
+        /// The VST3 plug-in factory.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "system" fn GetPluginFactory() -> *mut ::core::ffi::c_void {
+            // SAFETY: as a VST3 host calls it.
+            unsafe { $crate::clap::__wrapper::vst3::clap_wrapper_GetPluginFactory() }
+        }
+
+        /// Called by a VST3 host on macOS when it loads the bundle.
+        #[cfg(target_os = "macos")]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn bundleEntry(bundle: *mut ::core::ffi::c_void) -> bool {
+            // SAFETY: as a VST3 host calls it, with the bundle's CFBundleRef.
+            unsafe { $crate::clap::__wrapper::vst3::clap_wrapper_bundleEntry(bundle) }
+        }
+
+        /// Called by a VST3 host on macOS before it unloads the bundle.
+        #[cfg(target_os = "macos")]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn bundleExit() -> bool {
+            // SAFETY: as a VST3 host calls it.
+            unsafe { $crate::clap::__wrapper::vst3::clap_wrapper_bundleExit() }
+        }
+
+        /// Called by a VST3 host on Linux when it loads the module.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn ModuleEntry(module: *mut ::core::ffi::c_void) -> bool {
+            // SAFETY: as a VST3 host calls it, with the module's handle.
+            unsafe { $crate::clap::__wrapper::vst3::clap_wrapper_ModuleEntry(module) }
+        }
+
+        /// Called by a VST3 host on Linux before it unloads the module.
+        #[cfg(all(unix, not(target_os = "macos")))]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn ModuleExit() -> bool {
+            // SAFETY: as a VST3 host calls it.
+            unsafe { $crate::clap::__wrapper::vst3::clap_wrapper_ModuleExit() }
+        }
+
+        /// Called by a VST3 host on Windows when it loads the module.
+        #[cfg(windows)]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "system" fn InitDll() -> bool {
+            // SAFETY: as a VST3 host calls it.
+            unsafe { $crate::clap::__wrapper::vst3::clap_wrapper_InitDll() }
+        }
+
+        /// Called by a VST3 host on Windows before it unloads the module.
+        #[cfg(windows)]
+        #[unsafe(no_mangle)]
+        pub unsafe extern "system" fn ExitDll() -> bool {
+            // SAFETY: as a VST3 host calls it.
+            unsafe { $crate::clap::__wrapper::vst3::clap_wrapper_ExitDll() }
+        }
+    };
+}
+
+#[cfg(not(feature = "vst3"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __export_vst3 {
+    () => {};
+}
+
+/// With the `auv2` feature on macOS, exports the Audio Unit factory function
+/// clap-wrapper makes from `clap_entry`; part of
+/// [`export_clap!`](crate::export_clap).
+#[cfg(all(feature = "auv2", target_os = "macos"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __export_auv2 {
+    () => {
+        /// The Audio Unit's factory function, which the bundle's
+        /// `Info.plist` names.
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn GetPluginFactoryAUV2(
+            desc: *const ::core::ffi::c_void,
+        ) -> *mut ::core::ffi::c_void {
+            // SAFETY: as the Audio Unit framework calls it, with an
+            // AudioComponentDescription.
+            unsafe { $crate::clap::__wrapper::auv2::lspkWrapAsAUV2Factory(desc) }
+        }
+    };
+}
+
+#[cfg(not(all(feature = "auv2", target_os = "macos")))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __export_auv2 {
+    () => {};
 }
 
 /// A CLAP entry point for `$plugin` as a value, without exporting it, for
@@ -80,6 +183,12 @@ macro_rules! clap_entry {
         $crate::clap::__entry!($crate::clap::ClapEntry<$plugin>)
     };
 }
+
+/// clap-wrapper, for the entry points [`export_clap!`](crate::export_clap)
+/// exports with the `vst3` and `auv2` features.
+#[cfg(any(feature = "vst3", feature = "auv2"))]
+#[doc(hidden)]
+pub use lspk_clap_wrapper as __wrapper;
 
 /// A CLAP entry point, as [`export_clap!`](crate::export_clap) exports and
 /// [`clap_entry!`](crate::clap_entry) makes.

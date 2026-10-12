@@ -24,5 +24,9 @@ clack-extensions = { version = "=0.2.0", features = [
     "tail",
 ] }
 
+# A VST3 host for tests: bindings generated from the VST3 SDK's headers,
+# pinned exactly as clack is.
+vst3 = "=0.3.0"
+
 [lints]
 workspace = true

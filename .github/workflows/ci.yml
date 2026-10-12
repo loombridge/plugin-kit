@@ -7,7 +7,7 @@
 # - cancels a run when a newer commit supersedes it;
 # - restores the dependency cache on every run, but saves it only from main,
 #   so pull requests share main's cache instead of filling the quota;
-# - times out a hung job after 30 minutes rather than the default six hours.
+# - times out a hung job after 45 minutes rather than the default six hours.
 #
 # A failure on one platform doesn't cancel the others (fail-fast is off), so
 # one run reports every platform's failures.
@@ -41,7 +41,7 @@ jobs:
   check:
     name: check (${{ matrix.name }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -93,3 +93,9 @@ jobs:
         env:
           NEXTEST_PROFILE: ci
         run: cargo xtask check
+
+      # The example plug-ins in every format, through the formats' own
+      # validators: Steinberg's VST3 validator (built from the vendored VST3
+      # SDK) on every platform, and auval on macOS.
+      - name: cargo xtask validate
+        run: cargo xtask validate lspk-example-gain lspk-example-sine
