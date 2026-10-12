@@ -11,12 +11,16 @@ publish.workspace = true
 [dependencies]
 # Parameter smoothing (`smooth`), re-exported.
 lspk-params.workspace = true
+# The pole-zero filter's design, as presets store it.
+serde = { version = "1.0.228", default-features = false, features = ["std", "derive"] }
 
 [dev-dependencies]
 # The micro-benchmarks' suite format.
 lspk-test.workspace = true
 # The allocation trap, for the real-time tests.
 lspk-rt.workspace = true
+# The pole-zero design's round trip through JSON.
+serde_json = "1"
 
 # Micro-benchmarks for the hot paths, run by `cargo xtask bench` (timing) and
 # counted by its instruction-count gate.
