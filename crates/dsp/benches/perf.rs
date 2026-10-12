@@ -6,6 +6,7 @@ use std::hint::black_box;
 use std::process::ExitCode;
 
 use lspk_dsp::envelope::{Timing, Trigger};
+use lspk_dsp::filter::pole_zero::{self, PointKind, PoleZeroDesign};
 use lspk_dsp::lfo::{Lfo, LfoBank, LfoType, Point, Rate, Settings, Transport};
 use lspk_dsp::{
     Envelope, EnvelopeBank, EnvelopeParams, FilterBank, FilterType, LinearSmoother, Oversampler,
@@ -207,9 +208,11 @@ fn main() -> ExitCode {
     }
 
     // Every filter type over a block of 16 mono voices, each with its cutoff
-    // swept at audio rate and its own resonance and drive: one voice at a
-    // time (scalar), and in SIMD lanes across voices. Items are voice
-    // samples, so the time per item is the cost of one voice's sample.
+    // swept at audio rate and its own resonance, drive and Character: one
+    // voice at a time (scalar), and in SIMD lanes across voices. Items are
+    // voice samples, so the time per item is the cost of one voice's
+    // sample. (The pole-zero filter's default design is flat; its busy case
+    // follows.)
     for kind in FilterType::ALL {
         for simd in [false, true] {
             let name = format!("filter/{kind}/{}", if simd { "simd" } else { "scalar" });
@@ -229,6 +232,7 @@ fn main() -> ExitCode {
                             resonance: 0.9 * x,
                             drive: 0.5 * x,
                             saturation: x,
+                            character: x,
                             ..VoiceParams::default()
                         },
                     );
@@ -247,7 +251,70 @@ fn main() -> ExitCode {
         }
     }
 
+    // The pole-zero filter at its busiest: all eight points active in every
+    // state, X and Y moving at audio rate (offsets swept per sample), the
+    // cutoff swept too.
+    for simd in [false, true] {
+        let name = format!(
+            "filter/pole-zero-8-xy/{}",
+            if simd { "simd" } else { "scalar" }
+        );
+        suite.micro(&name, BLOCK * FILTER_VOICES, move || {
+            let mut bank = if simd {
+                FilterBank::new(48_000.0, FILTER_VOICES, 1)
+            } else {
+                FilterBank::scalar(48_000.0, FILTER_VOICES, 1)
+            };
+            bank.set_type(FilterType::PoleZero);
+            bank.set_pole_zero(&busy_pole_zero());
+            let stride = bank.stride();
+            for voice in 0..FILTER_VOICES {
+                bank.reset_voice(
+                    voice,
+                    &VoiceParams {
+                        character: voice as f32 / FILTER_VOICES as f32,
+                        ..VoiceParams::default()
+                    },
+                );
+            }
+            let sweep = |speed: f32, depth: f32, centre: f32| -> Vec<f32> {
+                (0..BLOCK * stride)
+                    .map(|i| {
+                        centre + depth * ((i / stride) as f32 * speed + (i % stride) as f32).sin()
+                    })
+                    .collect()
+            };
+            let pitch = sweep(0.01, 12.0, 68.4);
+            let xs = sweep(0.02, 0.5, 0.5);
+            let ys = sweep(0.013, 0.5, 0.5);
+            let noise = signal::noise(2, BLOCK * stride, 0.5);
+            let mut audio = noise.clone();
+            move || {
+                audio.copy_from_slice(&noise);
+                bank.process_xy(&pitch, &xs, &ys, &mut audio);
+                black_box(&audio);
+            }
+        });
+    }
+
     suite.main()
+}
+
+/// A pole-zero design with every point active in every state.
+fn busy_pole_zero() -> PoleZeroDesign {
+    let mut design = PoleZeroDesign::default();
+    for (s, state) in design.states.iter_mut().enumerate() {
+        for (p, point) in state.points.iter_mut().enumerate() {
+            let hz = 80.0 * 1.9f32.powi(p as i32) * (1.0 + 0.3 * s as f32);
+            *point = match (p + s) % 4 {
+                0 => pole_zero::Point::bell(hz, 1.5, 9.0),
+                1 => pole_zero::Point::new(PointKind::Notch, hz, 2.0),
+                2 => pole_zero::Point::new(PointKind::AllPass, hz, 0.7),
+                _ => pole_zero::Point::new(PointKind::LowPass, hz.max(2_000.0), 0.9),
+            };
+        }
+    }
+    design
 }
 
 /// Voices in the LFO benchmarks.

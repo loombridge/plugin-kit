@@ -10,7 +10,7 @@
 //! | [`envelope`] | Envelopes with delay, attack, hold, decay, sustain and release, bendable curves, tempo sync, legato and steal restarts, one voice or many in SIMD lanes |
 //! | [`lfo`] | LFOs: drawn shapes, an XY path, chaos and sample and hold, per voice or shared, with a SIMD path across voices |
 //! | [`oversample`] | Oversampling by 2, 4 or 8 for nonlinear processes |
-//! | [`filter`] | Zero-delay-feedback filters per voice: a state-variable family and a transistor ladder, scalar or in SIMD lanes across voices |
+//! | [`filter`] | Zero-delay-feedback filters per voice: a state-variable family, ladders (transistor, diode, driven), morphing, DJ, diffuser, pole-zero, comb, expander and K35 types, scalar or in SIMD lanes across voices |
 //! | [`simd`] | Lanes of `f32` for NEON, SSE4.2, AVX2 and AVX-512, chosen at run time, with a portable fallback |
 //!
 //! Everything here that runs per sample allocates nothing, locks nothing and
