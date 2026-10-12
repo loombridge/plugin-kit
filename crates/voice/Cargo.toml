@@ -1,12 +1,30 @@
 [package]
 name = "lspk-voice"
-description = "Polyphonic voice allocation and stealing, mono, legato and glide, unison stacks with detune and spread, MPE and per-note expression."
+description = "Polyphonic voice allocation and stealing, mono, legato and glide, MPE and per-note expression, in SIMD lanes; unison stacks to come."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license = "MIT OR Apache-2.0"
 repository.workspace = true
 publish.workspace = true
+
+[dependencies]
+# Note events, MIDI and CLAP's per-note expressions, as every kit plug-in
+# receives them (without a format: no default features).
+lspk-plugin.workspace = true
+
+[dev-dependencies]
+# SIMD kernels over the voice lanes, in the tests and benchmarks.
+lspk-dsp.workspace = true
+lspk-rt.workspace = true
+# The micro-benchmarks' suite format.
+lspk-test.workspace = true
+
+# Micro-benchmarks for the hot paths, run by `cargo xtask bench` (timing) and
+# counted by its instruction-count gate.
+[[bench]]
+name = "perf"
+harness = false
 
 [lints]
 workspace = true

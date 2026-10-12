@@ -69,6 +69,9 @@
     "lspk-example-sine/one-voice/idle": 636375,
     "lspk-example-sine/one-voice/load-state": 1081,
     "lspk-example-sine/one-voice/process": 7578149,
+    "lspk-voice/allocation/heavy-traffic": 192266,
+    "lspk-voice/voice-loop/32-sines": 264345,
+    "lspk-voice/voice-loop/32-voices": 151992,
     "lspk-wavetable/load/256-frames": 250539510,
     "lspk-wavetable/load/spectral-morph": 241796337,
     "lspk-wavetable/read/block": 36911
