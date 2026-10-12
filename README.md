@@ -4,7 +4,7 @@ The plug-in kit is a set of Rust crates for building audio plug-ins: real-time s
 
 [Reagent](https://github.com/loombridge/reagent), a wavetable synthesiser, is the first plug-in built on it.
 
-The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands`, `lspk-agent` and `lspk-plugin` (with its CLAP, VST3 and Audio Unit v2 exports) hold working code, `lspk-test` holds CLAP, VST3 and Audio Unit hosts for tests, every other crate is still a stub, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
+The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands`, `lspk-agent`, `lspk-plugin` (with its CLAP, VST3 and Audio Unit v2 exports) and `lspk-test` (the headless test harness, with CLAP, VST3 and Audio Unit hosts) hold working code, every other crate is still a stub, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
 
 ## Crates
 
@@ -53,13 +53,19 @@ Two example plug-ins under `examples/`, never published, show the `Plugin` trait
    clap-validator validate target/bundle/*.clap
    ```
 
-1. To run the formats' own validators on them: Steinberg's VST3 validator, built from the vendored VST3 SDK, on every platform; `auval` on macOS, with each `.component` installed in `~/Library/Audio/Plug-Ins/Components` while it runs; and [pluginval](https://github.com/Tracktion/pluginval) at strictness 5 if `PLUGINVAL` names its binary (a release you install yourself; it isn't part of the repository).
+1. To run every format's validators on them: clap-validator; Steinberg's VST3 validator, which xtask builds from the vendored VST3 SDK; on macOS `auval`, with each `.component` installed in `~/Library/Audio/Plug-Ins/Components` while it runs; and [pluginval](https://github.com/Tracktion/pluginval) at strictness 5 when it's on the `PATH` (a release you install yourself, as CI does on macOS; it isn't part of the repository). With no crates named, `cargo xtask validate` checks the example plug-ins, as CI does.
 
    ```sh
-   PLUGINVAL=/path/to/pluginval cargo xtask validate lspk-example-gain lspk-example-sine
+   cargo xtask validate lspk-example-gain lspk-example-sine
    ```
 
    A plug-in's Audio Unit type, subtype and manufacturer codes come from its info, as `lspk_plugin::bundle::AuCodes` describes; `cargo xtask bundle` prints them.
+
+1. Golden renders are null-tested by `cargo xtask check`. When a change to a plug-in's sound is intended, remake its references and say why in the pull request:
+
+   ```sh
+   cargo xtask golden --update
+   ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request.
 

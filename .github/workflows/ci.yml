@@ -7,7 +7,11 @@
 # - cancels a run when a newer commit supersedes it;
 # - restores the dependency cache on every run, but saves it only from main,
 #   so pull requests share main's cache instead of filling the quota;
-# - times out a hung job after 45 minutes rather than the default six hours.
+# - times out a hung job after 45 minutes rather than the default six hours;
+# - runs the format validators on the example plug-ins (`cargo xtask
+#   validate`), with clap-validator built from source at a pinned revision and
+#   cached per platform, so it's compiled once until the pin changes, and on
+#   macOS pluginval from a pinned release, checked against its SHA-256.
 #
 # A failure on one platform doesn't cancel the others (fail-fast is off), so
 # one run reports every platform's failures.
@@ -36,6 +40,13 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
   RUST_BACKTRACE: 1
+  # clap-validator's revision (free-audio/clap-validator, after 0.4.1). Change
+  # it here only; the cache key follows it.
+  CLAP_VALIDATOR_REV: b2f1d9b79b1d264a5747f46707d72b1aa40a02ef
+  # pluginval's release (Tracktion/pluginval) and the SHA-256 of its macOS
+  # archive. A tool only: never linked into anything, never committed.
+  PLUGINVAL_VERSION: v1.0.4
+  PLUGINVAL_MACOS_SHA256: 3c4c533bda0c5059eea3ddaea752d757ee2025041f0f47e6bcb0e87f6082b29f
 
 jobs:
   check:
@@ -89,13 +100,41 @@ jobs:
           # A prebuilt, checksummed binary or nothing: never compile it here.
           fallback: none
 
+      - name: Restore clap-validator
+        id: clap-validator
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.clap-validator
+          key: clap-validator-${{ runner.os }}-${{ runner.arch }}-${{ env.CLAP_VALIDATOR_REV }}
+
+      - name: Install clap-validator
+        if: steps.clap-validator.outputs.cache-hit != 'true'
+        run: >-
+          cargo install --locked
+          --git https://github.com/free-audio/clap-validator
+          --rev "$CLAP_VALIDATOR_REV"
+          --root "$HOME/.clap-validator"
+          clap-validator
+
+      - name: Install pluginval
+        if: runner.os == 'macOS'
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/pluginval.zip" \
+            "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL_VERSION/pluginval_macOS.zip"
+          echo "$PLUGINVAL_MACOS_SHA256  $RUNNER_TEMP/pluginval.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/pluginval.zip" -d "$RUNNER_TEMP/pluginval"
+          echo "$RUNNER_TEMP/pluginval/pluginval.app/Contents/MacOS" >> "$GITHUB_PATH"
+
       - name: cargo xtask check
         env:
           NEXTEST_PROFILE: ci
         run: cargo xtask check
 
-      # The example plug-ins in every format, through the formats' own
-      # validators: Steinberg's VST3 validator (built from the vendored VST3
-      # SDK) on every platform, and auval on macOS.
+      # Every format's validators on the example plug-ins: clap-validator,
+      # Steinberg's VST3 validator (which xtask builds from the vendored VST3
+      # SDK) on every platform, and on macOS auval and pluginval.
       - name: cargo xtask validate
-        run: cargo xtask validate lspk-example-gain lspk-example-sine
+        if: ${{ !cancelled() }}
+        run: |
+          export PATH="$HOME/.clap-validator/bin:$PATH"
+          cargo xtask validate

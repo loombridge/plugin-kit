@@ -10,15 +10,8 @@ use lspk_plugin::bundle::{self, AuCodes, BundleInfo};
 
 use crate::{cargo, cargo_metadata};
 
-/// The pluginval strictness the kit's plug-ins pass.
-const PLUGINVAL_STRICTNESS: &str = "5";
-
 /// A plug-in crate's bundles.
 pub struct Bundled {
-    /// The crate.
-    pub package: String,
-    /// What its CLAP descriptor says.
-    pub info: BundleInfo,
     /// The `.vst3` bundle.
     pub vst3: PathBuf,
     /// The `.component` bundle, on macOS.
@@ -85,95 +78,9 @@ pub fn bundle(root: &Path, packages: &[String]) -> Result<Vec<Bundled>, String> 
             let [kind, subtype, manufacturer] = codes.as_strs();
             eprintln!("  Audio Unit: {kind} {subtype} {manufacturer}");
         }
-        bundled.push(Bundled {
-            package: package.clone(),
-            info,
-            vst3,
-            auv2,
-        });
+        bundled.push(Bundled { vst3, auv2 });
     }
     Ok(bundled)
-}
-
-/// Bundles each plug-in crate in `packages`, then runs every validator
-/// there is for each format on this platform, and fails if any fails.
-pub fn validate(root: &Path, packages: &[String]) -> Result<(), String> {
-    let bundled = bundle(root, packages)?;
-    let validator = build_vst3_validator(root)?;
-    let pluginval = std::env::var_os("PLUGINVAL").map(PathBuf::from);
-    let mut results: Vec<(String, Result<(), String>)> = Vec::new();
-
-    for plugin in &bundled {
-        let name = &plugin.package;
-        results.push((
-            format!("{name}: VST3 validator"),
-            run(Command::new(&validator).arg(&plugin.vst3)),
-        ));
-        if let Some(pluginval) = &pluginval {
-            results.push((
-                format!("{name}: pluginval (VST3)"),
-                run(&mut pluginval_command(pluginval, &plugin.vst3)),
-            ));
-        }
-        if let Some(component) = &plugin.auv2 {
-            let installed = install_component(component)?;
-            let codes = AuCodes::derive(&plugin.info);
-            let [kind, subtype, manufacturer] = codes.as_strs();
-            results.push((
-                format!("{name}: auval"),
-                run(Command::new("auval").args(["-v", kind, subtype, manufacturer])),
-            ));
-            if let Some(pluginval) = &pluginval {
-                results.push((
-                    format!("{name}: pluginval (Audio Unit)"),
-                    run(&mut pluginval_command(pluginval, &installed)),
-                ));
-            }
-            std::fs::remove_dir_all(&installed)
-                .map_err(|e| format!("couldn't remove {}: {e}", installed.display()))?;
-        }
-    }
-
-    eprintln!("\n==> validators");
-    if pluginval.is_none() {
-        eprintln!("skipped: pluginval (set PLUGINVAL to its binary to run it)");
-    }
-    let mut failed = 0;
-    for (name, result) in &results {
-        let status = if result.is_ok() { "ok" } else { "FAILED" };
-        eprintln!("{status:>6}  {name}");
-        failed += usize::from(result.is_err());
-    }
-    if failed == 0 {
-        Ok(())
-    } else {
-        Err(format!(
-            "{failed} of {} validator runs failed",
-            results.len()
-        ))
-    }
-}
-
-/// pluginval validating `path` at the kit's strictness.
-fn pluginval_command(pluginval: &Path, path: &Path) -> Command {
-    let mut command = Command::new(pluginval);
-    command
-        .args(["--strictness-level", PLUGINVAL_STRICTNESS, "--validate"])
-        .arg(path);
-    command
-}
-
-/// Runs `command`, streaming its output, and fails unless it succeeds.
-fn run(command: &mut Command) -> Result<(), String> {
-    let program = command.get_program().to_string_lossy().into_owned();
-    let status = command
-        .status()
-        .map_err(|e| format!("couldn't run {program}: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("{program} failed ({status})"))
-    }
 }
 
 /// The hidden task that prints a library's plug-in info, one field a line:
@@ -260,7 +167,7 @@ fn sign_ad_hoc(path: &Path) -> Result<(), String> {
 
 /// Copies `component` into the user's Audio Unit folder, where `auval` and
 /// hosts look, and has the system rescan; returns where it went.
-fn install_component(component: &Path) -> Result<PathBuf, String> {
+pub fn install_component(component: &Path) -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME").ok_or("HOME isn't set")?;
     let folder = PathBuf::from(home).join("Library/Audio/Plug-Ins/Components");
     let name = component.file_name().ok_or("a component has a name")?;
@@ -294,8 +201,8 @@ fn copy_dir(from: &Path, to: &Path) -> std::io::Result<()> {
 
 /// Builds Steinberg's VST3 validator from the vendored SDK
 /// (`tools/vst3-validator`), into the workspace's target folder, and
-/// returns its path.
-fn build_vst3_validator(root: &Path) -> Result<PathBuf, String> {
+/// returns the folder that holds it, `vst3-validator`.
+pub fn build_vst3_validator(root: &Path) -> Result<PathBuf, String> {
     let target = target_dir(root)?.join("tools");
     let manifest = root.join("tools/vst3-validator/Cargo.toml");
     let manifest = manifest.to_string_lossy();
@@ -312,13 +219,11 @@ fn build_vst3_validator(root: &Path) -> Result<PathBuf, String> {
             &target_arg,
         ],
     )?;
-    Ok(target
-        .join("release")
-        .join(format!("validator{}", std::env::consts::EXE_SUFFIX)))
+    Ok(target.join("release"))
 }
 
 /// The workspace's target folder.
-fn target_dir(root: &Path) -> Result<PathBuf, String> {
+pub fn target_dir(root: &Path) -> Result<PathBuf, String> {
     cargo_metadata(root)?["target_directory"]
         .as_str()
         .map(PathBuf::from)

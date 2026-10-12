@@ -7,6 +7,10 @@
 //! The trap sees only the test binary's own allocator, so a plug-in loaded
 //! from a `.clap` file is checked only on the host's side; load it from its
 //! entry point ([`ClapTestHost::from_entry`]) to check the plug-in too.
+//!
+//! [`ClapTestHost::render`] plays a [`Script`] as the in-process harness
+//! does ([`crate::render`](mod@crate::render)), so a test can render the same script both
+//! ways and compare.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -31,6 +35,11 @@ use clack_host::events::event_types::{
 use clack_host::events::spaces::CoreEventSpace;
 use clack_host::events::{Match, Pckn};
 use clack_host::prelude::*;
+use lspk_params::ParamDescriptor;
+use lspk_plugin::Event;
+
+use crate::cpu::Timings;
+use crate::render::{Output, Render, Script};
 
 pub use clack_host::process::ProcessStatus;
 
@@ -185,6 +194,8 @@ pub struct ClapTestHost {
     in_events: EventBuffer,
     out_events: EventBuffer,
     steady: u64,
+    sample_rate: f64,
+    max_frames: usize,
 }
 
 /// How many events a block may carry each way.
@@ -249,6 +260,8 @@ impl ClapTestHost {
             in_events: EventBuffer::with_capacity(EVENT_CAPACITY),
             out_events: EventBuffer::with_capacity(EVENT_CAPACITY),
             steady: 0,
+            sample_rate: 0.0,
+            max_frames: 0,
         })
     }
 
@@ -418,6 +431,8 @@ impl ClapTestHost {
         let inputs = self.audio_ports(true).first().copied().unwrap_or(0) as usize;
         let outputs = self.audio_ports(false).first().copied().unwrap_or(0) as usize;
         let frames = max_frames as usize;
+        self.sample_rate = sample_rate;
+        self.max_frames = frames;
         self.inputs = vec![vec![0.0; frames]; inputs];
         self.outputs = vec![vec![0.0; frames]; outputs];
         self.input_ports = AudioPorts::with_capacity(inputs, 1);
@@ -460,16 +475,119 @@ impl ClapTestHost {
     /// processing fails, or, with the trap installed, the block touches the
     /// heap.
     pub fn process(&mut self, frames: usize, input: Option<&[f32]>, events: &[HostEvent]) -> Block {
+        let inputs: &[&[f32]] = match &input {
+            Some(input) => std::slice::from_ref(input),
+            None => &[],
+        };
+        self.process_channels(frames, inputs, events)
+    }
+
+    /// Runs one block of `frames` frames, with `inputs` (one slice per
+    /// input channel, the first repeated on any channel beyond them, and
+    /// silence past a slice's end; empty for silence) and `events` (in time
+    /// order).
+    ///
+    /// # Panics
+    ///
+    /// As for [`ClapTestHost::process`].
+    pub fn process_channels(
+        &mut self,
+        frames: usize,
+        inputs: &[&[f32]],
+        events: &[HostEvent],
+    ) -> Block {
+        let (status, _) = self.run(frames, inputs, events);
+        Block {
+            outputs: self.outputs.iter().map(|c| c[..frames].to_vec()).collect(),
+            status,
+            events: self.out_events.iter().map(plugin_event).collect(),
+        }
+    }
+
+    /// Plays `script` in blocks of `block` frames, from wherever the
+    /// plug-in is now, at the sample rate it was activated at. `params` are
+    /// the plug-in's parameters (its `Plugin::params`), to send the
+    /// script's values, in their own units, as the host sees them.
+    ///
+    /// # Panics
+    ///
+    /// As for [`ClapTestHost::process`], or if `block` is 0.
+    pub fn render(
+        &mut self,
+        script: &Script,
+        block: usize,
+        params: &[ParamDescriptor],
+    ) -> Render<PluginEvent> {
+        assert!(block > 0, "a block must hold at least one frame");
+        let channels = self.outputs.len();
+        let mut output = vec![Vec::with_capacity(script.frames()); channels];
+        let mut events = Vec::new();
+        let mut statuses = Vec::new();
+        let mut timings = Timings::new(self.sample_rate);
+        let mut host_events = Vec::new();
+        let mut inputs = vec![Vec::new(); self.inputs.len()];
+        let mut from = 0;
+        while from < script.frames() {
+            let to = (from + block).min(script.frames());
+            let frames = to - from;
+            host_events.clear();
+            host_events.extend(
+                script
+                    .block_events(from, to)
+                    .filter_map(|e| host_event(&e, params)),
+            );
+            for (channel, input) in inputs.iter_mut().enumerate() {
+                input.resize(frames, 0.0);
+                script.fill_input(channel, from, input);
+            }
+            let slices: Vec<&[f32]> = inputs.iter().map(Vec::as_slice).collect();
+            let (status, duration) = self.run(frames, &slices, &host_events);
+            for (out, channel) in output.iter_mut().zip(&self.outputs) {
+                out.extend_from_slice(&channel[..frames]);
+            }
+            let offset = from as u32;
+            events.extend(
+                self.out_events
+                    .iter()
+                    .map(|e| retime_plugin_event(plugin_event(e), offset)),
+            );
+            statuses.push(status_of(status));
+            timings.push(frames, duration);
+            from = to;
+        }
+        Render {
+            output: Output::new(self.sample_rate, output),
+            events,
+            statuses,
+            timings,
+            dropped_events: 0,
+        }
+    }
+
+    /// Runs one block, leaving its output in `self.outputs` and what the
+    /// plug-in sent in `self.out_events`.
+    fn run(
+        &mut self,
+        frames: usize,
+        inputs: &[&[f32]],
+        events: &[HostEvent],
+    ) -> (ProcessStatus, std::time::Duration) {
+        assert!(
+            frames <= self.max_frames,
+            "a block of {frames} frames, more than the {} it was activated for",
+            self.max_frames
+        );
         self.in_events.clear();
         self.out_events.clear();
         for event in events {
             push(&mut self.in_events, event);
         }
-        for channel in &mut self.inputs {
-            match input {
-                Some(input) => channel[..frames].copy_from_slice(&input[..frames]),
-                None => channel[..frames].fill(0.0),
-            }
+        for (index, channel) in self.inputs.iter_mut().enumerate() {
+            let source = inputs.get(index).or_else(|| inputs.first()).copied();
+            let source = source.unwrap_or(&[]);
+            let n = source.len().min(frames);
+            channel[..n].copy_from_slice(&source[..n]);
+            channel[n..frames].fill(0.0);
         }
         for channel in &mut self.outputs {
             channel[..frames].fill(0.0);
@@ -499,27 +617,27 @@ impl ClapTestHost {
         let mut out_events = OutputEvents::from_buffer(&mut self.out_events);
         let steady = self.steady;
         let mut run = || {
-            processor.process(
+            let start = std::time::Instant::now();
+            let result = processor.process(
                 &ins,
                 &mut outs,
                 &in_events,
                 &mut out_events,
                 Some(steady),
                 None,
-            )
+            );
+            (result, start.elapsed())
         };
-        let result = if lspk_rt::trap::is_installed() {
+        // A real-time section either way, so denormals are flushed and a
+        // render is the same with the trap or without.
+        let (result, duration) = if lspk_rt::trap::is_installed() {
             lspk_rt::rt_test!(run())
         } else {
-            run()
+            lspk_rt::realtime(run)
         };
         let status = result.expect("processing succeeds");
         self.steady += frames as u64;
-        Block {
-            outputs: self.outputs.iter().map(|c| c[..frames].to_vec()).collect(),
-            status,
-            events: self.out_events.iter().map(plugin_event).collect(),
-        }
+        (status, duration)
     }
 
     /// Flushes parameters with `events`: through the audio thread's flush
@@ -551,6 +669,101 @@ impl ClapTestHost {
 impl Drop for ClapTestHost {
     fn drop(&mut self) {
         self.deactivate();
+    }
+}
+
+/// A script's `event`, in the parameter's own units, as this host sends
+/// it; `None` for a parameter `params` doesn't describe.
+fn host_event(event: &Event, params: &[ParamDescriptor]) -> Option<HostEvent> {
+    let key = |note: &lspk_plugin::Note| note.key.map(u16::from);
+    let channel = |note: &lspk_plugin::Note| note.channel.map(u16::from);
+    Some(match *event {
+        Event::NoteOn {
+            time,
+            note,
+            velocity,
+        } => HostEvent::NoteOn {
+            time,
+            key: key(&note)?,
+            channel: channel(&note).unwrap_or(0),
+            note_id: note.id,
+            velocity: f64::from(velocity),
+        },
+        Event::NoteOff { time, note, .. } => HostEvent::NoteOff {
+            time,
+            key: key(&note),
+            channel: channel(&note),
+            note_id: note.id,
+        },
+        Event::NoteChoke { time, note } => HostEvent::NoteChoke {
+            time,
+            key: key(&note),
+        },
+        Event::Param { time, id, value } => {
+            let descriptor = params.iter().find(|d| d.id == id)?;
+            HostEvent::Param {
+                time,
+                id: id.0,
+                value: to_host(descriptor, value),
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// `value`, in the parameter's own units, as a CLAP host sees it: a stepped
+/// parameter's whole-number value, or a continuous one's travel from 0 to
+/// 1, as the kit's CLAP export maps it.
+#[must_use]
+pub fn to_host(descriptor: &ParamDescriptor, value: f64) -> f64 {
+    if descriptor.is_stepped() {
+        descriptor.clamp(value)
+    } else {
+        descriptor.normalize(value)
+    }
+}
+
+/// A host's `value` for a parameter, in the parameter's own units.
+#[must_use]
+pub fn from_host(descriptor: &ParamDescriptor, value: f64) -> f64 {
+    if descriptor.is_stepped() {
+        descriptor.clamp(value)
+    } else {
+        descriptor.denormalize(value)
+    }
+}
+
+fn status_of(status: ProcessStatus) -> lspk_plugin::ProcessStatus {
+    match status {
+        ProcessStatus::Continue => lspk_plugin::ProcessStatus::Continue,
+        ProcessStatus::ContinueIfNotQuiet => lspk_plugin::ProcessStatus::ContinueIfNotQuiet,
+        ProcessStatus::Tail => lspk_plugin::ProcessStatus::Tail,
+        ProcessStatus::Sleep => lspk_plugin::ProcessStatus::Sleep,
+    }
+}
+
+/// `event` moved `offset` frames later.
+fn retime_plugin_event(event: PluginEvent, offset: u32) -> PluginEvent {
+    let later = |time: u32| time.saturating_add(offset);
+    match event {
+        PluginEvent::GestureBegin { time, id } => PluginEvent::GestureBegin {
+            time: later(time),
+            id,
+        },
+        PluginEvent::Param { time, id, value } => PluginEvent::Param {
+            time: later(time),
+            id,
+            value,
+        },
+        PluginEvent::GestureEnd { time, id } => PluginEvent::GestureEnd {
+            time: later(time),
+            id,
+        },
+        PluginEvent::NoteEnd { time, key } => PluginEvent::NoteEnd {
+            time: later(time),
+            key,
+        },
+        PluginEvent::Other => PluginEvent::Other,
     }
 }
 

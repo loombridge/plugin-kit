@@ -15,6 +15,9 @@ path = "src/main.rs"
 [dependencies]
 # Lays out plug-in files for `cargo xtask bundle`; no format export needed.
 lspk-plugin.workspace = true
+# The golden suites' update switch and the format validators, for
+# `cargo xtask golden` and `cargo xtask validate`.
+lspk-test.workspace = true
 # Reads each plug-in's CLAP descriptor for `cargo xtask bundle`, pinned as
 # lspk-test pins it.
 clack-host = "=0.2.0"

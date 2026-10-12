@@ -1,6 +1,7 @@
 //! Repository tasks for the plug-in kit. Run `cargo xtask help` for the list.
 
 mod formats;
+mod harness;
 mod private_terms;
 mod vendored;
 
@@ -26,12 +27,17 @@ Tasks:
                  Build each plug-in crate in release and lay it out in target/bundle as
                  a .clap, a .vst3 and, on macOS, a .component (Audio Unit v2), signed
                  ad hoc on macOS
-  validate <crate>...
-                 Bundle each plug-in crate and run the format validators on it:
-                 Steinberg's VST3 validator (built from the vendored SDK), auval on
-                 macOS (installing each .component in ~/Library/Audio/Plug-Ins/Components
-                 while it runs), and pluginval at strictness 5 when PLUGINVAL names its
-                 binary
+  golden [--update] [NAME...]
+                 Run every crate's golden suite (tests/golden.rs) against its references.
+                 With --update, first remake the references whose renders changed (or
+                 only those named), recording this platform as the one that made them;
+                 say why in the pull request
+  validate [<crate>...]
+                 Bundle the plug-in crates (the examples if none are named) and run each
+                 format's validators on them: clap-validator; Steinberg's VST3 validator,
+                 built from the vendored VST3 SDK; on macOS, auval, with each .component
+                 installed in ~/Library/Audio/Plug-Ins/Components while it runs; and
+                 pluginval at strictness 5 where it's on the PATH (skipped otherwise)
   help           Show this message
 ";
 
@@ -91,15 +97,15 @@ fn main() -> ExitCode {
 
 fn run(root: &Path, args: &[String]) -> Result<(), String> {
     let task = args.first().map(String::as_str);
-    if task == Some("bundle") {
-        return formats::bundle(root, &args[1..]).map(drop);
-    }
-    if task == Some(formats::PLUGIN_INFO) {
-        let library = args.get(1).ok_or("name the library")?;
-        return formats::print_plugin_info(Path::new(library));
-    }
-    if task == Some("validate") {
-        return formats::validate(root, &args[1..]);
+    match task {
+        Some("bundle") => return formats::bundle(root, &args[1..]).map(drop),
+        Some(formats::PLUGIN_INFO) => {
+            let library = args.get(1).ok_or("name the library")?;
+            return formats::print_plugin_info(Path::new(library));
+        }
+        Some("golden") => return harness::golden(root, &args[1..]),
+        Some("validate") => return harness::validate(root, &args[1..]),
+        _ => {}
     }
     if let Some(extra) = args.get(1) {
         return Err(format!("unexpected `{extra}`\n\n{USAGE}"));
