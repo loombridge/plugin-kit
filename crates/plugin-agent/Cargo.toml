@@ -1,0 +1,25 @@
+[package]
+name = "lspk-plugin-agent"
+description = "The agent interface inside a running plug-in: its parameters and commands as tools, its own MCP server on loopback, discovery, checkpoints and perception."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "MIT OR Apache-2.0"
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+lspk-agent.workspace = true
+lspk-commands.workspace = true
+lspk-params.workspace = true
+lspk-plugin.workspace = true
+# Perception: the render harness and the measurements, without the format
+# hosts (the `hosts` feature), which a plug-in never needs at run time.
+lspk-test = { path = "../test", default-features = false }
+# Pinned to lspk-commands' version: the commands' and tools' schemas come from it.
+schemars = { version = "=1.2.2", default-features = false, features = ["std", "derive"] }
+serde = { version = "1.0.228", default-features = false, features = ["std", "derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true

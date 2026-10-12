@@ -4,13 +4,18 @@
 //!
 //! One parameter, [`GAIN`], from −∞ dB to +12 dB, glides to each new value
 //! over 20 ms so a change never clicks. The processor sleeps while its input
-//! is silent.
+//! is silent. One command of its own, [`RESET`], puts the gain back to 0 dB.
+//!
+//! It's exported with the agent interface ([`lspk_plugin_agent::WithAgent`]),
+//! so an agent can drive it in any host once the person switches its agent
+//! server on.
 
+use lspk_commands::{CommandSpec, Context, NoArgs, Permission};
 use lspk_params::smooth::DEFAULT_SMOOTHING_SECONDS;
-use lspk_params::{LinearSmoother, ParamDescriptor, ParamId};
+use lspk_params::{LinearSmoother, ParamDescriptor, ParamId, gain_to_db};
 use lspk_plugin::{
     AudioLayout, Buffers, Event, Events, Host, Plugin, PluginError, PluginInfo, ProcessConfig,
-    ProcessContext, ProcessStatus, Processor, features,
+    ProcessContext, ProcessStatus, Processor, RegisterError, Registry, features,
 };
 
 /// The plug-in's ID.
@@ -21,6 +26,8 @@ pub const NAME: &str = "Example Gain";
 pub const GAIN: ParamId = ParamId(1);
 /// The gain's highest value, in dB.
 pub const MAX_DB: f64 = 12.0;
+/// The plug-in's own command: put the gain back to 0 dB.
+pub const RESET: &str = "gain.reset";
 
 /// The parameters.
 #[must_use]
@@ -33,7 +40,9 @@ pub fn params() -> Vec<ParamDescriptor> {
 
 /// The plug-in on the main thread.
 #[derive(Debug)]
-pub struct Gain;
+pub struct Gain {
+    host: Host,
+}
 
 impl Plugin for Gain {
     type Processor = GainProcessor;
@@ -46,12 +55,54 @@ impl Plugin for Gain {
         .features(&[features::AUDIO_EFFECT, features::UTILITY, features::STEREO])
         .audio(AudioLayout::effect(2));
 
-    fn new(_host: Host) -> Self {
-        Self
+    fn new(host: Host) -> Self {
+        Self { host }
     }
 
     fn params(&self) -> Vec<ParamDescriptor> {
         params()
+    }
+
+    fn summary(&self) -> Option<String> {
+        let gain = self.host.param(GAIN)?;
+        Some(format!(
+            "A stereo gain: both channels are scaled by {}, gliding over 20 ms to each new value.",
+            if gain > 0.0 {
+                format!("{:+.2} dB", gain_to_db(gain))
+            } else {
+                "-inf dB (silence)".to_owned()
+            }
+        ))
+    }
+
+    fn register_commands(&self, registry: &mut Registry) -> Result<(), RegisterError> {
+        registry.register(
+            CommandSpec::new(RESET, "Reset Gain")
+                .description(
+                    "Puts the gain back to 0 dB, so the output matches the input. The host \
+                     records it like a person's change.",
+                )
+                .permission(Permission::Edit)
+                .context(Context::Global)
+                .args::<NoArgs>()
+                .result::<()>(),
+        )
+    }
+
+    fn run_command(
+        &mut self,
+        id: &str,
+        _args: &serde_json::Value,
+    ) -> Result<serde_json::Value, PluginError> {
+        match id {
+            RESET => {
+                self.host
+                    .edit(GAIN, 1.0)
+                    .map_err(|e| PluginError::new(e.to_string()))?;
+                Ok(serde_json::Value::Null)
+            }
+            other => Err(PluginError::new(format!("no command `{other}`"))),
+        }
     }
 
     fn editor(&mut self) -> Option<Box<dyn lspk_plugin::Editor>> {
@@ -141,4 +192,4 @@ impl Processor for GainProcessor {
     }
 }
 
-lspk_plugin::export_clap!(Gain);
+lspk_plugin::export_clap!(lspk_plugin_agent::WithAgent<Gain>);

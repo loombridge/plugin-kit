@@ -28,6 +28,9 @@ use clack_extensions::params::{
 };
 use clack_extensions::state::{HostState, HostStateImpl, PluginState};
 use clack_extensions::tail::PluginTail;
+use clack_extensions::track_info::{
+    HostTrackInfo, HostTrackInfoImpl, PluginTrackInfo, TrackInfo, TrackInfoWriter,
+};
 use clack_host::entry::EntryDescriptor;
 use clack_host::events::event_types::{
     MidiEvent, NoteChokeEvent, NoteOffEvent, NoteOnEvent, ParamValueEvent,
@@ -41,6 +44,7 @@ use lspk_plugin::Event;
 use crate::cpu::Timings;
 use crate::render::{Output, Render, Script};
 
+pub use crate::render::Requests;
 pub use clack_host::process::ProcessStatus;
 
 /// An event the test sends the plug-in, at its frame in the block.
@@ -151,22 +155,6 @@ pub struct ParamInfo {
     pub is_enum: bool,
     /// Whether automation can move it.
     pub automatable: bool,
-}
-
-/// What the plug-in asked of the host since the last
-/// [`ClapTestHost::take_requests`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Requests {
-    /// A parameter flush.
-    pub flush: bool,
-    /// Its state is dirty.
-    pub dirty: bool,
-    /// A restart.
-    pub restart: bool,
-    /// Processing again.
-    pub process: bool,
-    /// A main-thread callback.
-    pub callback: bool,
 }
 
 /// One processed block.
@@ -394,6 +382,17 @@ impl ClapTestHost {
         state
             .load(&plugin, &mut &bytes[..])
             .map_err(|e| format!("{e:?}"))
+    }
+
+    /// Names the track the plug-in is on, as `track-info` reports it, and
+    /// tells the plug-in it changed.
+    pub fn set_track_name(&mut self, name: &str) {
+        self.instance
+            .access_handler(|m| m.track.set(Some(name.as_bytes().to_vec().leak())));
+        let handle = self.instance.plugin_handle();
+        if let Some(track_info) = handle.get_extension::<PluginTrackInfo>() {
+            track_info.changed(&handle);
+        }
     }
 
     /// Calls the plug-in back on the main thread, as after it asked.
@@ -898,7 +897,8 @@ impl HostHandlers for TestHost {
         builder
             .register::<HostParams>()
             .register::<HostState>()
-            .register::<HostLatency>();
+            .register::<HostLatency>()
+            .register::<HostTrackInfo>();
     }
 }
 
@@ -935,6 +935,9 @@ impl HostParamsImplShared for Shared {
 #[derive(Default)]
 struct MainThread {
     dirty: Cell<bool>,
+    /// The track name `track-info` reports, if any. Leaked, as clack's
+    /// writer wants the name to live as long as the host's handler.
+    track: Cell<Option<&'static [u8]>>,
 }
 
 impl MainThreadHandler<'_> for MainThread {}
@@ -953,4 +956,12 @@ impl HostStateImpl for MainThread {
 
 impl HostLatencyImpl for MainThread {
     fn changed(&self) {}
+}
+
+impl HostTrackInfoImpl for MainThread {
+    fn get<'a>(&'a self, writer: &mut TrackInfoWriter<'_, 'a>) {
+        if let Some(track) = self.track.get() {
+            writer.set(&TrackInfo::new().with_name(Some(track)));
+        }
+    }
 }

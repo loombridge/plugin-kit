@@ -1117,22 +1117,29 @@ version = "0.0.0"
 name = "lspk-example-gain"
 version = "0.0.0"
 dependencies = [
+ "lspk-agent",
+ "lspk-commands",
  "lspk-params",
  "lspk-plugin",
+ "lspk-plugin-agent",
  "lspk-rt",
  "lspk-test",
  "lspk-ui",
+ "serde_json",
 ]
 
 [[package]]
 name = "lspk-example-sine"
 version = "0.0.0"
 dependencies = [
+ "lspk-agent",
  "lspk-params",
  "lspk-plugin",
+ "lspk-plugin-agent",
  "lspk-rt",
  "lspk-test",
  "lspk-ui",
+ "serde_json",
 ]
 
 [[package]]
@@ -1163,6 +1170,20 @@ dependencies = [
  "lspk-rt",
  "lspk-test",
  "rtrb",
+ "serde_json",
+]
+
+[[package]]
+name = "lspk-plugin-agent"
+version = "0.0.0"
+dependencies = [
+ "lspk-agent",
+ "lspk-commands",
+ "lspk-params",
+ "lspk-plugin",
+ "lspk-test",
+ "schemars",
+ "serde",
  "serde_json",
 ]
 

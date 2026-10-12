@@ -30,7 +30,6 @@ use lspk_plugin::{
 };
 use rtrb::Consumer;
 
-use crate::clap::Requests;
 use crate::cpu::Timings;
 
 /// The block sizes [`block_invariance`] checks by default.
@@ -759,6 +758,22 @@ impl EventSink for Collect {
             false
         }
     }
+}
+
+/// What the plug-in asked of the host since the host last looked
+/// ([`Instance::take_requests`], and the CLAP test host's `take_requests`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Requests {
+    /// A parameter flush.
+    pub flush: bool,
+    /// Its state is dirty.
+    pub dirty: bool,
+    /// A restart.
+    pub restart: bool,
+    /// Processing again.
+    pub process: bool,
+    /// A main-thread callback.
+    pub callback: bool,
 }
 
 /// What the plug-in asked of this host.

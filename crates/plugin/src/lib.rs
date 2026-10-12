@@ -76,7 +76,7 @@ pub mod clap;
 pub use audio::{Buffers, MAX_CHANNELS};
 pub use editor::{Editor, EditorContext, EditorSize, ParentWindow, ResizeHints, WindowApi};
 pub use events::{Event, EventSource, Events, Note};
-pub use host::{EditError, EventSink, Host, HostBackend, OutputEvent, ProcessContext};
+pub use host::{EditError, EventSink, Host, HostBackend, OutputEvent, ProcessContext, Waker};
 pub use lspk_commands::{RegisterError, Registry};
 pub use lspk_params::{ParamDescriptor, ParamId};
 pub use params::ParamValues;
@@ -107,9 +107,10 @@ use std::fmt;
 ///   with [`Plugin::register_commands`] and [`Plugin::run_command`] reached
 ///   through Beatlayer's registry; and the agent-commands CLAP extension,
 ///   which serves the same two methods to a CLAP host.
-/// - **R0.9, the in-plug-in agent server:** runs from
-///   [`Plugin::on_main_thread`], woken by [`Host::request_callback`], and
-///   changes parameters through [`Host::edit`].
+/// - **R0.9, the in-plug-in agent server** (`lspk-plugin-agent`): runs
+///   from [`Plugin::on_main_thread`], woken from its own threads through
+///   [`Host::waker`], changes parameters through [`Host::edit`], and reads
+///   [`Plugin::summary`], [`Host::host_name`] and [`Host::track_name`].
 /// - **R0.10, the editor:** [`Plugin::editor`], served through CLAP's
 ///   `gui` extension, which `clap-wrapper` turns into VST3's and Audio
 ///   Units' views.
@@ -181,8 +182,21 @@ pub trait Plugin: Sized + 'static {
         0
     }
 
-    /// Called on the main thread after [`Host::request_callback`].
+    /// Called on the main thread after [`Host::request_callback`] or a
+    /// [`Host::waker`].
     fn on_main_thread(&mut self) {}
+
+    /// Called on the main thread when the host says the track the instance
+    /// is on has changed (its name, say): see [`Host::track_name`].
+    fn track_info_changed(&mut self) {}
+
+    /// The plug-in's own summary of its state, in a few sentences of prose,
+    /// for agents that reason better from text than from a list of values:
+    /// what it's set to do, and how the sound flows through it. `None`
+    /// leaves agents the parameters alone.
+    fn summary(&self) -> Option<String> {
+        None
+    }
 
     /// The plug-in's editor, if it has one: asked for once, as the
     /// instance starts, and kept for its life while the host opens and
