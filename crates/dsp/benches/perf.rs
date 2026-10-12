@@ -5,12 +5,15 @@
 use std::hint::black_box;
 use std::process::ExitCode;
 
-use lspk_dsp::{LinearSmoother, Oversampler, simd};
+use lspk_dsp::{FilterBank, FilterType, LinearSmoother, Oversampler, VoiceParams, simd};
 use lspk_test::bench::Suite;
 use lspk_test::signal;
 
 /// Frames in a block, as hosts commonly use.
 const BLOCK: usize = 512;
+
+/// Voices in the filter benchmarks' banks.
+const VOICES: usize = 16;
 
 fn main() -> ExitCode {
     let mut suite = Suite::new("lspk-dsp");
@@ -63,6 +66,47 @@ fn main() -> ExitCode {
             black_box(&bus);
         }
     });
+
+    // Every filter type over a block of 16 mono voices, each with its cutoff
+    // swept at audio rate and its own resonance and drive: one voice at a
+    // time (scalar), and in SIMD lanes across voices. Items are voice
+    // samples, so the time per item is the cost of one voice's sample.
+    for kind in FilterType::ALL {
+        for simd in [false, true] {
+            let name = format!("filter/{kind}/{}", if simd { "simd" } else { "scalar" });
+            suite.micro(&name, BLOCK * VOICES, move || {
+                let mut bank = if simd {
+                    FilterBank::new(48_000.0, VOICES, 1)
+                } else {
+                    FilterBank::scalar(48_000.0, VOICES, 1)
+                };
+                bank.set_type(kind);
+                let stride = bank.stride();
+                for voice in 0..VOICES {
+                    let x = voice as f32 / VOICES as f32;
+                    bank.reset_voice(
+                        voice,
+                        &VoiceParams {
+                            resonance: 0.9 * x,
+                            drive: 0.5 * x,
+                            saturation: x,
+                            ..VoiceParams::default()
+                        },
+                    );
+                }
+                let pitch: Vec<f32> = (0..BLOCK * stride)
+                    .map(|i| 70.0 + 30.0 * ((i / stride) as f32 * 0.01 + (i % stride) as f32).sin())
+                    .collect();
+                let noise = signal::noise(2, BLOCK * stride, 0.5);
+                let mut audio = noise.clone();
+                move || {
+                    audio.copy_from_slice(&noise);
+                    bank.process(&pitch, &mut audio);
+                    black_box(&audio);
+                }
+            });
+        }
+    }
 
     suite.main()
 }
