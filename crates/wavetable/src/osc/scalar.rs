@@ -108,8 +108,8 @@ pub(super) fn render<P: PhaseStage, W: WaveStage>(
         return;
     }
     let n = frames;
-    let varying = inputs.pitch_step.is_some() || inputs.pitch_mod.is_some();
     for l in 0..inputs.lanes {
+        let varying = inputs.pitch_mod.is_some() || inputs.pitch_step.is_some_and(|s| s[l] != 0.0);
         let mut base = inputs.pitch[l] + lanes.pitch_offset[l] + plan.tune;
         if !plan.key_track {
             base -= lanes.key[l];
@@ -150,9 +150,9 @@ pub(super) fn render<P: PhaseStage, W: WaveStage>(
             } else {
                 (fixed, fixed)
             };
-            let next = levels.level_for(peak) as usize;
-            let before = levels.fade_from(lanes.level[l], own, next);
-            lanes.level[l] = next as u32;
+            levels.advance(lanes.level_state(l), own, peak);
+            let (before, next) = (lanes.from[l] as usize, lanes.level[l] as usize);
+            let faded = lanes.faded[l];
             // Without frame modulation, the frames hold for the stretch.
             let fade = before != next;
             let held = inputs.frame_mod.is_none().then(|| pick(&plan, frame_base));
@@ -170,12 +170,15 @@ pub(super) fn render<P: PhaseStage, W: WaveStage>(
                 if fade {
                     let old = held_old.unwrap_or_else(|| Waves::new(table, before, at));
                     let old = old.read(plan.smooth, read_at);
-                    let x = (k - start + 1) as f32 * (1.0 / len as f32);
+                    let x = ((faded + (k - start + 1) as f32) / super::FADED).min(1.0);
                     let toward = x * x * x * (x * (x * 6.0 - 15.0) + 10.0);
                     value = old + (value - old) * toward;
                 }
                 out[k * stride + l] = wave_stage.shape_lane(l, k, value) * plan.gain;
                 phase = phase.wrapping_add(increment);
+            }
+            if fade {
+                lanes.faded[l] = (faded + len as f32).min(super::FADED);
             }
             start += len;
         }

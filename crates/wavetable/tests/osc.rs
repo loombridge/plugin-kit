@@ -5,7 +5,9 @@
 use std::f64::consts::TAU;
 
 use lspk_dsp::simd::{self, F32s, Level as SimdLevel, U32s};
+use lspk_plugin::{Event, Note};
 use lspk_test::measure::{Pitch, aliasing};
+use lspk_voice::{Start, VoiceBlock, VoiceEvent, VoiceEventKind, VoiceHandler, Voices};
 use lspk_wavetable::osc::{
     Inputs, Layout, Onset, Oscillator, Params, PhaseMode, PhaseStage, WaveStage,
 };
@@ -596,6 +598,9 @@ fn mipmap_levels_change_without_clicks_under_fast_pitch_modulation() {
     let frames = 96_000;
     let vibrato = |k: usize| 0.5 * (TAU * 15.0 * k as f64 / rate).sin();
 
+    // Rendered in pieces of uneven length, as a voice manager splits a
+    // block at events and control points: a fade lasts its 32 frames
+    // across them.
     let mut osc = oscillator(table.clone(), 1, 1, rate as f32, 256);
     osc.start(0, centre, Onset::Fresh);
     let n = osc.lane_count();
@@ -603,18 +608,25 @@ fn mipmap_levels_change_without_clicks_under_fast_pitch_modulation() {
     let mut smooth = Vec::with_capacity(frames);
     let mut modulation = vec![0.0; 256 * n];
     let mut out = vec![0.0; 256 * n];
-    for block in 0..frames / 256 {
-        for k in 0..256 {
-            modulation[k * n] = vibrato(block * 256 + k) as f32;
+    let pieces = [256, 32, 5, 27, 1, 32, 19, 100, 3];
+    let mut done = 0;
+    for &len in pieces.iter().cycle() {
+        let len = len.min(frames - done);
+        if len == 0 {
+            break;
+        }
+        for k in 0..len {
+            modulation[k * n] = vibrato(done + k) as f32;
         }
         let inputs = Inputs {
             lanes: 1,
             pitch: &pitch,
-            pitch_mod: Some(&modulation),
+            pitch_mod: Some(&modulation[..len * n]),
             ..Inputs::default()
         };
-        osc.process(256, &inputs, &mut out);
-        smooth.extend(out.iter().step_by(n));
+        osc.process(len, &inputs, &mut out[..len * n]);
+        smooth.extend(out[..len * n].iter().step_by(n));
+        done += len;
     }
 
     // The same note, switching level in one sample.
@@ -909,4 +921,95 @@ fn instances_share_one_table_and_hold_little_of_their_own() {
     // Sixteen instances cost less than a table and a half.
     assert!(table + 16 * own < table * 3 / 2);
     let _ = Table::build;
+}
+
+/// A synthesiser of one oscillator, driven by the kit's voice manager.
+struct Synth {
+    osc: Oscillator,
+    out: Vec<f32>,
+}
+
+impl VoiceHandler for Synth {
+    fn voice_event(&mut self, voices: &mut VoiceBlock, event: VoiceEvent) {
+        match event.kind {
+            VoiceEventKind::Start { start, .. } => {
+                let onset = match start {
+                    Start::Fresh => Onset::Fresh,
+                    Start::Steal => Onset::Steal,
+                    Start::Retrigger => Onset::Retrigger,
+                    Start::Legato => Onset::Legato,
+                    Start::Join { .. } => Onset::Join,
+                };
+                let key = f32::from(voices.info(event.voice).key);
+                self.osc.start(event.voice, key, onset);
+            }
+            VoiceEventKind::Release => voices.end(event.voice),
+            VoiceEventKind::End { .. } => {}
+        }
+    }
+
+    fn render(&mut self, voices: &mut VoiceBlock, frames: std::ops::Range<usize>) {
+        let n = self.osc.lane_count();
+        let inputs = Inputs {
+            lanes: voices.span(1),
+            pitch: voices.pitch(),
+            pitch_step: Some(voices.pitch_step()),
+            ..Inputs::default()
+        };
+        let out = &mut self.out[frames.start * n..frames.end * n];
+        self.osc.process(frames.len(), &inputs, out);
+    }
+}
+
+#[test]
+fn the_voice_manager_s_lanes_drive_the_oscillator() {
+    // Spec: engine-core R1
+    // The voice block's lanes are the oscillator's: same count, same
+    // order, pitch as MIDI note numbers with a step per frame.
+    let layout = lspk_voice::Layout {
+        voices: 8,
+        lanes_per_voice: 2,
+    };
+    let mut voices = Voices::new(layout, 48_000.0);
+    let osc = Oscillator::new(
+        share(&[sine(1)]),
+        Layout {
+            voices: 8,
+            lanes_per_voice: 2,
+        },
+        48_000.0,
+        512,
+        3,
+    );
+    assert_eq!(osc.lane_count(), voices.block().lane_count());
+    let n = osc.lane_count();
+    let mut synth = Synth {
+        osc,
+        out: vec![0.0; 512 * n],
+    };
+    let mut audio = vec![Vec::new(); 4];
+    for block in 0..100 {
+        let events: Vec<Event> = if block == 0 {
+            [57, 69]
+                .iter()
+                .enumerate()
+                .map(|(i, &key)| Event::NoteOn {
+                    time: 100 + i as u32 * 37,
+                    note: Note::key(0, key),
+                    velocity: 0.8,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        voices.process(events, 512, &mut synth);
+        for (l, lane) in audio.iter_mut().enumerate() {
+            lane.extend(synth.out.iter().skip(l).step_by(n).copied());
+        }
+    }
+    // Voice 0 (lanes 0 and 1) plays A3, voice 1 (lanes 2 and 3) A4.
+    for (l, want) in [(0, 220.0), (1, 220.0), (2, 440.0), (3, 440.0)] {
+        let measured = lspk_test::measure::pitch(&audio[l][1_024..], 48_000.0).unwrap();
+        assert!((measured - want).abs() < 0.01, "lane {l}: {measured} Hz");
+    }
 }

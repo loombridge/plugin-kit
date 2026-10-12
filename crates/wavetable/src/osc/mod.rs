@@ -24,9 +24,10 @@
 //! highest phase increment in that stretch and the next (past the end of
 //! a render, the last stretch's rise carried on), so the level it leaves
 //! stays clean while it fades out. When the level changes, the lane
-//! crossfades from the old level to the new across the stretch, along a
-//! curve whose first two derivatives are 0 at both ends, so fast pitch
-//! modulation never switches a band of harmonics on or off in one sample.
+//! crossfades from the old level to the new over [`SUB_BLOCK`] frames,
+//! however the renders split them, along a curve whose first two
+//! derivatives are 0 at both ends, so fast pitch modulation never switches
+//! a band of harmonics on or off in one sample.
 
 mod kernel;
 mod scalar;
@@ -320,20 +321,79 @@ impl Levels {
         self.limit[..self.count].partition_point(|&limit| limit < increment) as u32
     }
 
-    /// The level a lane that had level `had` fades from into `next`, in a
-    /// stretch whose increments reach `own`: the one it had, unless it
-    /// had none or it has two or more levels too many harmonics for this
-    /// stretch (after a jump in pitch the look ahead couldn't see: a new
-    /// note on a sounding voice), when it takes `next` at once.
+    /// Moves lane state `lane` on to a stretch whose increments reach
+    /// `own`, and `peak` with the next stretch. A lane takes the level for
+    /// `peak` and, when that's a change, fades to it from its last level
+    /// over [`SUB_BLOCK`] frames, across renders. It takes the new level at
+    /// once if it had none, or if the level it would fade from (or is
+    /// fading from) has two or more levels too many harmonics for this
+    /// stretch: after a jump in pitch the look ahead couldn't see, such as
+    /// a new note on a sounding voice. A fade back to the level it came
+    /// from carries on from the same mix.
     #[inline]
-    fn fade_from(&self, had: u32, own: u32, next: usize) -> usize {
-        if had == NO_LEVEL || had as usize + 1 < self.level_for(own) as usize {
-            next
-        } else {
-            had as usize
+    fn advance(&self, lane: LaneLevel<'_>, own: u32, peak: u32) {
+        let mut next = self.level_for(peak);
+        if *lane.level != NO_LEVEL && next < *lane.level {
+            // A level with more harmonics only once the pitch is a quarter
+            // of a semitone clear of the change, so a pitch hovering there
+            // doesn't fade back and forth (a level with fewer harmonics,
+            // which a rising pitch needs, is never held back).
+            next = self
+                .level_for(peak.saturating_add(peak >> 6))
+                .min(*lane.level);
+        }
+        let safe = self.level_for(own);
+        if *lane.level == NO_LEVEL || *lane.level + 1 < safe {
+            *lane.level = next;
+            *lane.faded = FADED;
+        }
+        if *lane.faded < FADED && *lane.from + 1 < safe {
+            *lane.faded = FADED;
+        }
+        if next != *lane.level {
+            if *lane.faded < FADED && next == *lane.from {
+                // Back the way it came, mid-fade: the same mix, with the
+                // roles swapped (the fade curve is symmetric).
+                *lane.faded = FADED - *lane.faded;
+            } else {
+                *lane.faded = 0.0;
+            }
+            *lane.from = *lane.level;
+            *lane.level = next;
+        }
+        if *lane.faded >= FADED {
+            *lane.from = *lane.level;
         }
     }
 }
+
+/// One lane's level state: the level it plays, the level it fades from,
+/// and how many frames of the fade it has played.
+struct LaneLevel<'a> {
+    level: &'a mut u32,
+    from: &'a mut u32,
+    faded: &'a mut f32,
+}
+
+impl Lanes {
+    /// Lane `l`'s level state.
+    fn level_state(&mut self, l: usize) -> LaneLevel<'_> {
+        LaneLevel {
+            level: &mut self.level[l],
+            from: &mut self.from[l],
+            faded: &mut self.faded[l],
+        }
+    }
+
+    /// Lane `l` had no level: its next stretch takes one without fading.
+    fn forget_level(&mut self, l: usize) {
+        self.level[l] = NO_LEVEL;
+        self.faded[l] = FADED;
+    }
+}
+
+/// How many frames a fade between levels lasts, as `faded` counts them.
+const FADED: f32 = SUB_BLOCK as f32;
 
 /// The values a render works from, fixed for the render.
 #[derive(Clone, Copy, Debug)]
@@ -359,6 +419,10 @@ struct Lanes {
     phase: Box<[u32]>,
     key: Box<[f32]>,
     level: Box<[u32]>,
+    /// The level each lane fades from, and how many frames of the fade it
+    /// has played ([`FADED`] once done).
+    from: Box<[u32]>,
+    faded: Box<[f32]>,
     rng: Box<[u32]>,
     pitch_offset: Box<[f32]>,
     frame_offset: Box<[f32]>,
@@ -428,6 +492,8 @@ impl Oscillator {
                 phase: vec![start; lane_count].into(),
                 key: vec![0.0; lane_count].into(),
                 level: vec![NO_LEVEL; lane_count].into(),
+                from: vec![NO_LEVEL; lane_count].into(),
+                faded: vec![FADED; lane_count].into(),
                 rng,
                 pitch_offset: vec![0.0; lane_count].into(),
                 frame_offset: vec![0.0; lane_count].into(),
@@ -448,7 +514,9 @@ impl Oscillator {
     pub fn set_table(&mut self, table: SharedTable) {
         self.levels = Levels::of(&table);
         self.table = table;
-        self.lanes.level.fill(NO_LEVEL);
+        for l in 0..self.lane_count {
+            self.lanes.forget_level(l);
+        }
     }
 
     /// Its controls.
@@ -554,7 +622,7 @@ impl Oscillator {
         for (copy, lane) in lanes.enumerate() {
             self.lanes.key[lane] = key;
             if onset == Onset::Fresh {
-                self.lanes.level[lane] = NO_LEVEL;
+                self.lanes.forget_level(lane);
             }
             if !restart {
                 continue;
@@ -583,6 +651,8 @@ impl Oscillator {
             + std::mem::size_of_val(&*l.phase)
             + std::mem::size_of_val(&*l.key)
             + std::mem::size_of_val(&*l.level)
+            + std::mem::size_of_val(&*l.from)
+            + std::mem::size_of_val(&*l.faded)
             + std::mem::size_of_val(&*l.rng)
             + std::mem::size_of_val(&*l.pitch_offset)
             + std::mem::size_of_val(&*l.frame_offset)

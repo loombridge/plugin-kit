@@ -87,7 +87,8 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
 
         // The increments: one for the render, or one per frame and one
         // for the look ahead past it.
-        let varying = inputs.pitch_step.is_some() || inputs.pitch_mod.is_some();
+        let moving = |s: &[f32]| s[c..c + S::LANES].iter().any(|&step| step != 0.0);
+        let varying = inputs.pitch_mod.is_some() || inputs.pitch_step.is_some_and(moving);
         let fixed = self.increment::<S>(base);
         if varying {
             let step = inputs
@@ -144,7 +145,7 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             } else {
                 (fixed, fixed)
             };
-            let (old, new, fade) = self.choose_levels::<S>(c, own, peak);
+            let (old, new, faded) = self.choose_levels::<S>(c, own, peak);
             let stretch = Stretch {
                 c,
                 start,
@@ -154,7 +155,9 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
                 frame_base,
                 old,
                 new,
+                faded: faded.unwrap_or(S::splat(0.0)),
             };
+            let fade = faded.is_some();
             phase = match (fade, plan.smooth, inputs.frame_mod.is_some()) {
                 (false, false, false) => self.stretch::<S, false, false, false>(&stretch, phase),
                 (false, false, true) => self.stretch::<S, false, false, true>(&stretch, phase),
@@ -165,21 +168,26 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
                 (true, true, false) => self.stretch::<S, true, true, false>(&stretch, phase),
                 (true, true, true) => self.stretch::<S, true, true, true>(&stretch, phase),
             };
+            if fade {
+                for faded in &mut self.lanes.faded[c..c + S::LANES] {
+                    *faded = (*faded + len as f32).min(super::FADED);
+                }
+            }
             start += len;
         }
         phase.store(&mut self.lanes.phase[c..]);
     }
 
-    /// Each lane's level for a stretch whose increments reach `own`, and
-    /// `peak` with the next stretch: the level it fades from, the level it
-    /// takes, and whether any lane fades.
+    /// Moves each lane's level on to a stretch whose increments reach
+    /// `own`, and `peak` with the next stretch: the levels it fades from
+    /// and plays, and if any lane is fading, how far each is into its fade.
     #[inline(always)]
     fn choose_levels<S: F32s>(
         &mut self,
         c: usize,
         own: S::U32s,
         peak: S::U32s,
-    ) -> (LaneLevels<S::U32s>, LaneLevels<S::U32s>, bool) {
+    ) -> (LaneLevels<S::U32s>, LaneLevels<S::U32s>, Option<S>) {
         let mut peaks = [0u32; 16];
         let mut owns = [0u32; 16];
         peak.store(&mut peaks);
@@ -189,12 +197,11 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
         let mut fade = false;
         let levels = self.levels;
         for (i, (&peak, &own)) in peaks.iter().zip(&owns).enumerate().take(S::LANES) {
-            let next = levels.level_for(peak) as usize;
-            let slot = &mut self.lanes.level[c + i];
-            let before = levels.fade_from(*slot, own, next);
-            fade |= before != next;
-            *slot = next as u32;
-            for (arrays, level) in [(&mut old, before), (&mut new, next)] {
+            let lane = self.lanes.level_state(c + i);
+            levels.advance(lane, own, peak);
+            let (from, level) = (self.lanes.from[c + i], self.lanes.level[c + i]);
+            fade |= from != level;
+            for (arrays, level) in [(&mut old, from as usize), (&mut new, level as usize)] {
                 arrays[0][i] = levels.offset[level];
                 arrays[1][i] = levels.stride[level];
                 arrays[2][i] = levels.size[level];
@@ -205,7 +212,8 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             stride: <S::U32s>::load(&a[1]),
             size: <S::U32s>::load(&a[2]),
         };
-        (lanes(&old), lanes(&new), fade)
+        let faded = fade.then(|| S::load(&self.lanes.faded[c..]));
+        (lanes(&old), lanes(&new), faded)
     }
 
     /// The frames lanes at frame position `position` read.
@@ -246,7 +254,7 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
         let stride = self.lane_count;
         let gain = S::splat(self.plan.gain);
         let fixed_frames = self.frames::<S, SMOOTH>(s.frame_base);
-        let to_fade = S::splat(1.0 / s.len as f32);
+        let per_frame = S::splat(1.0 / super::FADED);
         for k in s.start..s.start + s.len {
             let increment = if s.varying {
                 <S::U32s>::load(&self.lanes.increments[k * S::LANES..])
@@ -266,7 +274,8 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             let mut value = read::<S, SMOOTH>(data, &s.new, &frames, read_at);
             if FADE {
                 let before = read::<S, SMOOTH>(data, &s.old, &frames, read_at);
-                let x = S::splat((k - s.start + 1) as f32) * to_fade;
+                let played = s.faded + S::splat((k - s.start + 1) as f32);
+                let x = (played * per_frame).min(S::splat(1.0));
                 value = (value - before).mul_add(fade::<S>(x), before);
             }
             let value = self.wave_stage.shape::<S>(s.c, k, value) * gain;
@@ -296,6 +305,8 @@ struct Stretch<S: F32s> {
     frame_base: S,
     old: LaneLevels<S::U32s>,
     new: LaneLevels<S::U32s>,
+    /// How many frames of its fade each lane had played before the stretch.
+    faded: S,
 }
 
 /// The lanes' values at `phase` in `frames` of `level`.
