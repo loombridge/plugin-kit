@@ -3,10 +3,10 @@
 //! multimode and band-pass, and the K35.
 //!
 //! They run through a block loop of their own beside the normal group's,
-//! with the same smoothing, drive, stereo offset, mix and level, plus what
-//! these types need and the normal ones don't: Character and the pole-zero
-//! X and Y as smoothed settings, X and Y offsets at audio rate, cutoff
-//! smoothing (Smooth), more state, and a delay line for Comb II.
+//! with the same smoothing, drive, stereo offset, mix, level and delay
+//! lines, plus what only these types need: the pole-zero X and Y as
+//! smoothed settings with offsets at audio rate, and cutoff smoothing
+//! (Smooth).
 //!
 //! See the [module documentation](super) for each type's structure and
 //! laws.
@@ -16,17 +16,17 @@ use std::marker::PhantomData;
 use super::lane::{Lane, TAN_LIMIT, exp2, saturation_gain, soft_clip, tan};
 use super::pole_zero::{NEUTRAL_PITCH, Table};
 use super::{
-    CLEAN_DB, DRIVE, DRIVE_GAIN, FilterBank, FilterType, INV_KNEE, K_BUTTERWORTH_2, LADDER_MAX,
-    LEVEL, MAX_LANES, MIX, OFFSET, PARAMS, RES, SMOOTHING_SECONDS, STATES, saturated_k, svf, svf_k,
+    CHARACTER, CLEAN_DB, DRIVE, DRIVE_GAIN, FilterBank, FilterType, INV_KNEE, Io, K_BUTTERWORTH_2,
+    LADDER_MAX, LEVEL, Lines, MAX_STATES, MIX, OFFSET, PARAMS, RES, SMOOTHING_SECONDS, saturated_k,
+    svf, svf_k,
 };
 use crate::simd::{self, F32s, Kernel, Level};
 
-/// Indices of the extended group's smoothed settings.
-pub(super) const CHARACTER: usize = 0;
-pub(super) const MORPH_X: usize = 1;
-pub(super) const MORPH_Y: usize = 2;
+/// Indices of the pole-zero X and Y among the morph settings.
+const MORPH_X: usize = 0;
+const MORPH_Y: usize = 1;
 /// How many there are.
-pub(super) const EXTRA: usize = 3;
+pub(super) const MORPH: usize = 2;
 /// How many state variables each slot has for these types.
 pub(super) const X_STATES: usize = 20;
 /// Where the cutoff smoothing keeps its state: whether it has started,
@@ -38,11 +38,6 @@ const LAG_Y: usize = 19;
 
 /// Smooth's longest time constant, at Character 1, in seconds.
 pub(super) const SMOOTH_SECONDS: f32 = 0.1;
-/// The longest delay Comb II takes, in seconds: its lowest frequency is
-/// 20 Hz.
-pub(super) const MAX_DELAY_SECONDS: f32 = 0.05;
-/// Comb II's feedback at resonance 1.
-pub(super) const COMB_MAX: f32 = 0.98;
 /// Comb II's second frequency at Character 1, in octaves above the first.
 pub(super) const COMB_OCTAVES: f32 = 2.0;
 /// The diffuser's most stages, at Character 1.
@@ -123,52 +118,6 @@ fn gain<L: Lane>(pitch: L, ref_over_rate: L) -> L {
     tan(ratio * L::splat(std::f32::consts::PI))
 }
 
-/// Comb II's delay lines, for one group of lanes of one channel at one
-/// frame.
-pub(super) struct Io<'a> {
-    delay: &'a mut [f32],
-    mask: usize,
-    stride: usize,
-    /// The channel's first row.
-    row: usize,
-    voice: usize,
-    /// The row this frame writes.
-    write: usize,
-    max_delay: f32,
-}
-
-impl Io<'_> {
-    /// Each lane's delay line read `samples` back (2 to the longest delay),
-    /// with four-point Lagrange interpolation.
-    #[inline(always)]
-    fn read<L: Lane>(&self, samples: L) -> L {
-        let mut at = [0.0; MAX_LANES];
-        samples.store(&mut at);
-        let mut out = [0.0; MAX_LANES];
-        for (lane, (o, &d)) in out.iter_mut().zip(&at).take(L::LANES).enumerate() {
-            let whole = d as usize;
-            let t = d - whole as f32;
-            let tap = |back: usize| {
-                let row = self.row + (self.write.wrapping_sub(back) & self.mask);
-                self.delay[row * self.stride + self.voice + lane]
-            };
-            // Centred: the points one newer and two older than `whole`.
-            let (a, b, c, e) = (tap(whole - 1), tap(whole), tap(whole + 1), tap(whole + 2));
-            let (tm, t1, t2) = (t + 1.0, t - 1.0, t - 2.0);
-            *o = -t * t1 * t2 * (1.0 / 6.0) * a + tm * t1 * t2 * 0.5 * b - tm * t * t2 * 0.5 * c
-                + tm * t * t1 * (1.0 / 6.0) * e;
-        }
-        L::load(&out)
-    }
-
-    /// Writes this frame's value for each lane.
-    #[inline(always)]
-    fn write<L: Lane>(&mut self, value: L) {
-        let row = self.row + self.write;
-        value.store(&mut self.delay[row * self.stride + self.voice..]);
-    }
-}
-
 /// One sample's settings, smoothed.
 pub(super) struct Settings<'a, L> {
     resonance: L,
@@ -177,6 +126,10 @@ pub(super) struct Settings<'a, L> {
     x: L,
     y: L,
     ref_over_rate: L,
+    /// The reference pitch over the sample rate, and one over the rate, for
+    /// the delay lines.
+    reference_ratio: f32,
+    inv_rate: f32,
     pole_zero: &'a Table,
 }
 
@@ -186,8 +139,10 @@ pub(super) trait Structure {
     /// Whether Character is Smooth: it lags the cutoff (and the pole-zero
     /// X and Y).
     const SMOOTH: bool = false;
+    /// Whether it runs on the delay lines.
+    const LINES: bool = false;
     fn tick<L: Lane>(
-        io: &mut Io<'_>,
+        lines: &mut Lines<'_>,
         state: &mut [L; X_STATES],
         x: L,
         pitch: L,
@@ -278,8 +233,8 @@ impl<T: Structure> Run<'_, T> {
             (one, one)
         };
         let smooth_samples = L::splat(SMOOTH_SECONDS * bank.rate);
-        let rows = bank.delay_rows;
-        let start = bank.delay_at;
+        let reference_ratio = bank.reference / bank.rate;
+        let inv_rate = 1.0 / bank.rate;
         let stride = bank.stride;
         let frame_stride = bank.channels * stride;
         for c in 0..bank.channels {
@@ -295,20 +250,17 @@ impl<T: Structure> Run<'_, T> {
                     std::array::from_fn(|i| L::load(&bank.targets[i][voice..]));
                 let mut params: [L; PARAMS] =
                     std::array::from_fn(|i| L::load(&bank.smoothed[i][slot..]));
-                let extra_targets: [L; EXTRA] =
-                    std::array::from_fn(|i| L::load(&bank.extra_targets[i][voice..]));
-                let mut extra: [L; EXTRA] =
-                    std::array::from_fn(|i| L::load(&bank.extra_smoothed[i][slot..]));
+                let morph_targets: [L; MORPH] =
+                    std::array::from_fn(|i| L::load(&bank.morph_targets[i][voice..]));
+                let mut morph: [L; MORPH] =
+                    std::array::from_fn(|i| L::load(&bank.morph_smoothed[i][slot..]));
                 let mut state: [L; X_STATES] =
-                    std::array::from_fn(|i| L::load(&bank.extra_state[i][slot..]));
-                let mut io = Io {
-                    delay: &mut bank.delay,
-                    mask: rows - 1,
-                    stride,
-                    row: c * rows,
-                    voice,
-                    write: start,
-                    max_delay: bank.max_delay,
+                    std::array::from_fn(|i| L::load(&bank.state[i][slot..]));
+                let mut lines = Lines {
+                    buf: &mut bank.delay,
+                    len: bank.ring,
+                    cursor: bank.cursor,
+                    slot,
                 };
                 let ref_over_rate = L::splat(bank.reference / bank.rate);
                 for f in 0..self.frames {
@@ -318,11 +270,11 @@ impl<T: Structure> Run<'_, T> {
                     for (p, t) in params.iter_mut().zip(&targets) {
                         *p = (*t - *p).fma(alpha, *p);
                     }
-                    for (p, t) in extra.iter_mut().zip(&extra_targets) {
+                    for (p, t) in morph.iter_mut().zip(&morph_targets) {
                         *p = (*t - *p).fma(alpha, *p);
                     }
                     pitch = params[OFFSET].fma(sign, pitch);
-                    let (mut x, mut y) = (extra[MORPH_X], extra[MORPH_Y]);
+                    let (mut x, mut y) = (morph[MORPH_X], morph[MORPH_Y]);
                     if let Some((xs, ys)) = self.xy {
                         x = x + L::load(&xs[f * stride + voice..]);
                         y = y + L::load(&ys[f * stride + voice..]);
@@ -331,7 +283,7 @@ impl<T: Structure> Run<'_, T> {
                     if T::SMOOTH {
                         // A one-pole lag, time constant SMOOTH_SECONDS × c²,
                         // that starts at its first input.
-                        let c = extra[CHARACTER];
+                        let c = params[CHARACTER];
                         let a = one / (c * c).fma(smooth_samples, one);
                         let a = one - state[LAG_STARTED] * (one - a);
                         state[LAG_PITCH] = (pitch - state[LAG_PITCH]).fma(a, state[LAG_PITCH]);
@@ -346,29 +298,35 @@ impl<T: Structure> Run<'_, T> {
                     let settings = Settings {
                         resonance: params[RES],
                         inv_knee: params[INV_KNEE],
-                        character: extra[CHARACTER],
+                        character: params[CHARACTER],
                         x,
                         y,
                         ref_over_rate,
+                        reference_ratio,
+                        inv_rate,
                         pole_zero: &bank.pole_zero,
                     };
-                    io.write = (start + f) & (rows - 1);
-                    let wet = T::tick(&mut io, &mut state, driven, pitch, &settings);
+                    let wet = T::tick(&mut lines, &mut state, driven, pitch, &settings);
+                    if T::LINES {
+                        lines.advance();
+                    }
                     let out = wet.fma(params[MIX], input * (one - params[MIX])) * params[LEVEL];
                     out.store(&mut self.audio[at..]);
                 }
                 for (i, value) in params.iter().enumerate() {
                     value.store(&mut bank.smoothed[i][slot..]);
                 }
-                for (i, value) in extra.iter().enumerate() {
-                    value.store(&mut bank.extra_smoothed[i][slot..]);
+                for (i, value) in morph.iter().enumerate() {
+                    value.store(&mut bank.morph_smoothed[i][slot..]);
                 }
                 for (i, value) in state.iter().enumerate() {
-                    value.store(&mut bank.extra_state[i][slot..]);
+                    value.store(&mut bank.state[i][slot..]);
                 }
             }
         }
-        bank.delay_at = (start + self.frames) & (rows - 1);
+        if T::LINES {
+            bank.cursor = bank.cursor.wrapping_add(self.frames);
+        }
     }
 }
 
@@ -384,7 +342,7 @@ const BUZZ_KNEE: f32 = 3.0;
 impl Structure for BuzzMorph {
     #[inline(always)]
     fn tick<L: Lane>(
-        _io: &mut Io<'_>,
+        _lines: &mut Lines<'_>,
         state: &mut [L; X_STATES],
         x: L,
         pitch: L,
@@ -418,7 +376,7 @@ struct DjSweep;
 impl Structure for DjSweep {
     #[inline(always)]
     fn tick<L: Lane>(
-        _io: &mut Io<'_>,
+        _lines: &mut Lines<'_>,
         state: &mut [L; X_STATES],
         x: L,
         pitch: L,
@@ -469,7 +427,7 @@ struct Diffuser;
 impl Structure for Diffuser {
     #[inline(always)]
     fn tick<L: Lane>(
-        _io: &mut Io<'_>,
+        _lines: &mut Lines<'_>,
         state: &mut [L; X_STATES],
         x: L,
         pitch: L,
@@ -515,7 +473,7 @@ impl<const DRIVEN: bool> Structure for TransistorLadder<DRIVEN> {
 
     #[inline(always)]
     fn tick<L: Lane>(
-        _io: &mut Io<'_>,
+        _lines: &mut Lines<'_>,
         state: &mut [L; X_STATES],
         x: L,
         pitch: L,
@@ -573,7 +531,7 @@ impl<const CLEAN: bool> Structure for DiodeLadder<CLEAN> {
 
     #[inline(always)]
     fn tick<L: Lane>(
-        _io: &mut Io<'_>,
+        _lines: &mut Lines<'_>,
         state: &mut [L; X_STATES],
         x: L,
         pitch: L,
@@ -626,7 +584,7 @@ impl Structure for PoleZero {
 
     #[inline(always)]
     fn tick<L: Lane>(
-        _io: &mut Io<'_>,
+        _lines: &mut Lines<'_>,
         state: &mut [L; X_STATES],
         x: L,
         pitch: L,
@@ -657,34 +615,46 @@ impl Structure for PoleZero {
     }
 }
 
-/// Comb II: a feedback comb whose loop reads two taps, one period of the
-/// cutoff back and one period of a second frequency back (Character sets
-/// it, up to two octaves above), averaged, with a soft clipper in the loop.
-/// The output is scaled by 1 − feedback, so the peaks stay at unity.
+/// Comb II: a feedback comb whose loop reads two taps on the delay lines,
+/// one period of the cutoff back and one period of a second frequency back
+/// (character sets it, up to two octaves above), averaged, with a soft
+/// clipper in the loop. The output is scaled by 1 − feedback, so the peaks
+/// stay at unity.
 struct Comb2;
 
 impl Structure for Comb2 {
+    const LINES: bool = true;
+
     #[inline(always)]
     fn tick<L: Lane>(
-        io: &mut Io<'_>,
+        lines: &mut Lines<'_>,
         _state: &mut [L; X_STATES],
         x: L,
         pitch: L,
         p: &Settings<'_, L>,
     ) -> L {
-        let two = L::splat(2.0);
-        let longest = L::splat(io.max_delay);
-        let octaves = (pitch - L::splat(69.0)) * L::splat(1.0 / 12.0);
-        // Samples per period: rate / f = 1 / (ref / rate × 2^octaves).
-        let first = (L::splat(1.0) / (exp2(octaves) * p.ref_over_rate))
-            .max_(two)
-            .min_(longest);
-        let second = (first * exp2(p.character * L::splat(-COMB_OCTAVES))).max_(two);
-        let taps = (io.read(first) + io.read(second)) * L::splat(0.5);
+        // The lines work each lane's delay out from its pitch.
+        let io = Io {
+            x,
+            g: x,
+            ratio: x,
+            pitch,
+            r: p.resonance,
+            inv_knee: p.inv_knee,
+            character: p.character,
+            drive: x,
+            ref_over_rate: p.reference_ratio,
+            inv_rate: p.inv_rate,
+        };
+        let first = lines.read(0, 1, &io, |ratio, _| 1.0 / ratio);
+        let second = lines.read(0, 1, &io, |ratio, c| {
+            1.0 / (ratio * (c * COMB_OCTAVES).exp2())
+        });
+        let taps = (first + second) * L::splat(0.5);
         let knee = L::splat(1.0) / p.inv_knee;
-        let feedback = p.resonance * L::splat(COMB_MAX);
+        let feedback = p.resonance * L::splat(super::COMB_FEEDBACK_MAX);
         let y = feedback.fma(soft_clip(taps * p.inv_knee) * knee, x);
-        io.write(y);
+        lines.write(0, 1, y);
         y * (L::splat(1.0) - feedback)
     }
 }
@@ -705,7 +675,7 @@ pub(super) const EXPANDER_HIGH: [f32; 5] = [1.0, -4.0, 6.0, -4.0, 1.0];
 impl<const BAND: bool> Structure for Expander<BAND> {
     #[inline(always)]
     fn tick<L: Lane>(
-        _io: &mut Io<'_>,
+        _lines: &mut Lines<'_>,
         state: &mut [L; X_STATES],
         x: L,
         pitch: L,
@@ -765,7 +735,7 @@ const K35_KNEE: f32 = 3.0;
 impl Structure for K35 {
     #[inline(always)]
     fn tick<L: Lane>(
-        _io: &mut Io<'_>,
+        _lines: &mut Lines<'_>,
         state: &mut [L; X_STATES],
         x: L,
         pitch: L,
@@ -813,5 +783,5 @@ impl Structure for K35 {
     }
 }
 
-/// The extended types' state count fits beside the normal types'.
-const _: () = assert!(X_STATES >= STATES && 2 * DIFFUSER_STAGES <= LAG_STARTED);
+/// The extended types' state fits in the bank's.
+const _: () = assert!(X_STATES <= MAX_STATES && 2 * DIFFUSER_STAGES <= LAG_STARTED);

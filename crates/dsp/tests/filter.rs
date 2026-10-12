@@ -1,7 +1,10 @@
-//! The filters, measured: every type's response against its analogue
-//! prototype (slopes, cutoff, resonance peak), self-oscillation, stability
-//! across every setting and sample rate, block-size invariance, SIMD
-//! against scalar, the controls' behaviour, and no allocation.
+//! The filters, measured: the Normal group's responses against their
+//! analogue prototypes (slopes, cutoff, resonance peak) and
+//! self-oscillation; for every type in every group, stability across
+//! every setting and sample rate, block-size invariance, SIMD against
+//! scalar, cutoff sample by sample and no allocation; and the controls'
+//! behaviour. The other groups' responses are in `filter_groups.rs` and
+//! `filter_extended.rs`.
 //!
 //! Spec rules are cited as `engine-core Rn`.
 
@@ -104,16 +107,8 @@ fn prototype(kind: FilterType, resonance: f32, s: C) -> C {
             let g4 = lp1 * lp1 * lp1 * lp1;
             re(1.0 + 0.5 * k) * g / (one + re(k) * g4)
         }
-        // The extended group's prototypes are in filter_extended.rs.
-        _ => unreachable!("{kind} isn't in the normal group"),
+        _ => unreachable!("the Normal group's prototypes only"),
     }
-}
-
-/// The normal group's types, whose prototypes are here.
-fn normal() -> impl Iterator<Item = FilterType> {
-    FilterType::ALL
-        .into_iter()
-        .filter(|k| k.group() == FilterGroup::Normal)
 }
 
 /// The digital filter's prototype response at `hz`: the prototype on the
@@ -177,7 +172,7 @@ fn db(x: f64) -> f64 {
 fn every_type_matches_its_analogue_prototype() {
     for (rate, cutoff) in [(48_000.0, 1_000.0), (192_000.0, 9_000.0), (44_100.0, 120.0)] {
         let frequencies = measure::log_frequencies(20.0, 0.45 * f64::from(rate), 36);
-        for kind in normal() {
+        for kind in FilterType::NORMAL {
             for resonance in [0.0, 0.5, 0.9] {
                 let ir = impulse_response(kind, resonance, rate, cutoff, 1 << 15);
                 for &hz in &frequencies {
@@ -207,7 +202,7 @@ fn slopes_and_cutoffs_are_as_the_names_say() {
     };
     // Slopes are per octave away from the pass band.
     eprintln!("type        at cutoff   slope (dB/oct)");
-    for kind in normal() {
+    for kind in FilterType::NORMAL {
         let n = f64::from(kind.slope());
         let (at_cutoff, slope) = match kind {
             // Low-pass slopes three to four octaves above a 100 Hz cutoff.
@@ -272,7 +267,7 @@ fn slopes_and_cutoffs_are_as_the_names_say() {
             FilterType::Notch12 | FilterType::Notch24 => {
                 assert!(at_cutoff < -60.0, "{kind}: {at_cutoff}");
             }
-            _ => unreachable!(),
+            _ => unreachable!("the Normal group only"),
         }
     }
 }
@@ -283,7 +278,8 @@ fn resonant_peaks_have_the_prototypes_height_and_frequency() {
     let (rate, cutoff) = (48_000.0f32, 1_000.0f32);
     let grid = measure::log_frequencies(500.0, 2_000.0, 401);
     eprintln!("type        resonance  peak (dB)  prototype  at (Hz)");
-    for kind in normal()
+    for kind in FilterType::NORMAL
+        .into_iter()
         .filter(|k| k.has_resonance() && *k != FilterType::Notch12 && *k != FilterType::Notch24)
     {
         for resonance in [0.7, 0.9, 0.95] {
@@ -323,7 +319,7 @@ fn the_resonance_law_starts_at_butterworth_and_oscillates_near_the_top() {
     assert!((FilterType::Lp12.feedback(0.0) - std::f32::consts::SQRT_2).abs() < 1e-6);
     assert_eq!(FilterType::Lp18.feedback(0.0), 1.0);
     assert_eq!(FilterType::Ladder24.feedback(0.0), 0.0);
-    for kind in normal() {
+    for kind in FilterType::NORMAL {
         let top = kind.feedback(1.0);
         if !kind.has_resonance() {
             assert_eq!(top, 0.0);
@@ -362,7 +358,7 @@ fn ringing(kind: FilterType, rate: f32, cutoff: f32) -> Vec<f32> {
 // the cutoff.
 #[test]
 fn types_that_self_oscillate_do_so_steadily_at_the_cutoff() {
-    for kind in normal() {
+    for kind in FilterType::NORMAL {
         for (rate, cutoff) in [(48_000.0, 1_000.0), (96_000.0, 220.0)] {
             let tail = ringing(kind, rate, cutoff);
             let rms = measure::rms(&tail);
@@ -399,8 +395,41 @@ impl Rng {
 
 // Stable at every cutoff, resonance and setting, from 44.1 kHz to 192 kHz
 // oversampled 4 times, with cutoff swept at audio rate and loud input.
+// One test per group (the phasers apart), so they run in parallel.
 #[test]
 fn every_setting_is_stable_at_every_sample_rate() {
+    stable(&FilterType::NORMAL);
+}
+
+#[test]
+fn every_multi_setting_is_stable_at_every_sample_rate() {
+    stable(&FilterType::MULTI);
+}
+
+#[test]
+fn every_comb_and_flanger_setting_is_stable_at_every_sample_rate() {
+    stable(&FilterType::FLANGES[..16]);
+}
+
+#[test]
+fn every_phaser_setting_is_stable_at_every_sample_rate() {
+    stable(&FilterType::FLANGES[16..]);
+}
+
+#[test]
+fn every_misc_setting_is_stable_at_every_sample_rate() {
+    stable(&FilterType::MISC);
+}
+
+#[test]
+fn every_extended_setting_is_stable_at_every_sample_rate() {
+    stable(&FilterType::EXTENDED);
+}
+
+/// Every type in `kinds` stays bounded at every cutoff, resonance and
+/// setting, from 44.1 kHz to 192 kHz oversampled 4 times, with cutoff
+/// swept at audio rate and loud input.
+fn stable(kinds: &[FilterType]) {
     const VOICES: usize = 16;
     for rate in [
         44_100.0f32,
@@ -412,7 +441,7 @@ fn every_setting_is_stable_at_every_sample_rate() {
         768_000.0,
     ] {
         let frames = 4_096;
-        for kind in FilterType::ALL {
+        for &kind in kinds {
             for clean in [false, true] {
                 let mut bank = FilterBank::new(rate, VOICES, 2);
                 bank.set_type(kind);
@@ -426,8 +455,8 @@ fn every_setting_is_stable_at_every_sample_rate() {
                             resonance: [0.0, 0.9, 0.99, 1.0][v % 4],
                             drive: corner(2),
                             saturation: corner(3),
+                            character: [0.0, 0.5, 1.0, 0.8][(v / 4 + v) % 4],
                             stereo_offset: 24.0 * (corner(1) - 0.5),
-                            character: ((v * 5) % 16) as f32 / 15.0,
                             morph_x: corner(0),
                             morph_y: corner(1),
                             ..VoiceParams::default()
@@ -452,9 +481,19 @@ fn every_setting_is_stable_at_every_sample_rate() {
                     }
                 }
                 bank.process(&pitch, &mut audio);
+                // The EQ types boost by up to 24 dB, on top of drive's.
+                let eq = matches!(
+                    kind,
+                    FilterType::LowEq6
+                        | FilterType::LowEq12
+                        | FilterType::BandEq12
+                        | FilterType::HighEq6
+                        | FilterType::HighEq12
+                );
+                let bound = if eq { 16_000.0 } else { 1_000.0 };
                 for (i, y) in audio.iter().enumerate() {
                     assert!(
-                        y.is_finite() && y.abs() < 1_000.0,
+                        y.is_finite() && y.abs() < bound,
                         "{kind} at {rate} Hz, clean {clean}, voice {}: {y}",
                         i % stride
                     );
@@ -485,10 +524,10 @@ fn varied(v: usize, step: usize) -> VoiceParams {
         resonance: 0.9 * x,
         drive: 1.0 - x,
         saturation: x * x,
+        character: 1.0 - x * x,
         stereo_offset: 6.0 * x - 3.0,
         mix: 0.5 + 0.5 * x,
         level: 0.5 + x,
-        character: 1.0 - x,
         morph_x: x,
         morph_y: 1.0 - x * x,
     }
@@ -578,20 +617,13 @@ fn simd_lanes_match_the_scalar_path() {
             if !bank.process_at(level, &pitch, &mut out) {
                 continue;
             }
-            // A long delay turns a rounding in its length, from a pitch an
-            // ulp apart, into a phase difference.
-            let tolerance = if kind == FilterType::Comb2 {
-                2e-3
-            } else {
-                1e-4
-            };
             for f in 0..frames {
                 for v in 0..VOICES {
                     for c in 0..2 {
                         let a = scalar_audio[(f * 2 + c) * s + v];
                         let b = out[(f * 2 + c) * l + v];
                         assert!(
-                            (a - b).abs() < tolerance,
+                            (a - b).abs() < 1e-4,
                             "{kind} at {level}, frame {f}, voice {v}: {a} {b}"
                         );
                     }
@@ -642,7 +674,13 @@ fn cutoff_follows_the_pitch_buffer_sample_by_sample() {
         a.process(&steady, &mut x);
         b.process(&stepped, &mut y);
         assert_eq!(x[..300], y[..300], "{kind}");
-        assert_ne!(x[300], y[300], "{kind}");
+        // Types built on delay lines or holds may answer later: the change
+        // reaches the output once the line or the hold is read.
+        if kind.group() == FilterGroup::Normal {
+            assert_ne!(x[300], y[300], "{kind}");
+        } else {
+            assert_ne!(x[300..], y[300..], "{kind}");
+        }
     }
 }
 

@@ -11,9 +11,7 @@
 use std::f64::consts::{PI, TAU};
 
 use lspk_dsp::filter::pole_zero::{self, Point, PointKind, PoleZeroDesign, State};
-use lspk_dsp::filter::{
-    Character, FilterBank, FilterGroup, FilterType, VoiceParams, hertz_of, pitch_of,
-};
+use lspk_dsp::filter::{FilterBank, FilterGroup, FilterType, VoiceParams, hertz_of, pitch_of};
 use lspk_test::measure;
 use lspk_test::signal;
 
@@ -271,10 +269,10 @@ fn settings(kind: FilterType) -> Vec<VoiceParams> {
     let mut out = Vec::new();
     for resonance in [0.0, 0.5, 0.9] {
         let characters: &[f32] = match kind.character() {
-            Character::Morph | Character::Stages => &[0.0, 0.2, 0.5, 0.8, 1.0],
-            Character::LowHigh => &[0.0, 0.5, 1.0],
+            Some("morph" | "stages") => &[0.0, 0.2, 0.5, 0.8, 1.0],
+            Some("LP/HP") => &[0.0, 0.5, 1.0],
             // Smooth does nothing to a steady cutoff.
-            Character::Smooth | Character::Overdrive => &[0.0, 1.0],
+            Some("smooth" | "overdrive") => &[0.0, 1.0],
             _ => &[0.0],
         };
         for &c in characters {
@@ -381,7 +379,7 @@ fn comb_2_matches_its_difference_equation() {
 }
 
 // Comb II's peaks sit on the cutoff's harmonics between whole samples
-// too, at unity, and its pitch stops at 20 Hz.
+// too, at unity, down to 10 Hz.
 #[test]
 fn comb_2_is_tuned_between_whole_samples() {
     let params = VoiceParams {
@@ -392,9 +390,9 @@ fn comb_2_is_tuned_between_whole_samples() {
         let ir = impulse_response(
             bank(FilterType::Comb2, RATE, &params),
             pitch_of(hz as f32, 440.0),
-            1 << 16,
+            1 << 18,
         );
-        let fundamental = hz.max(20.0);
+        let fundamental = hz;
         for harmonic in [1.0, 5.0] {
             let centre = fundamental * harmonic;
             let (mut at, mut peak) = (0.0, 0.0);
@@ -411,7 +409,7 @@ fn comb_2_is_tuned_between_whole_samples() {
             );
             assert!((at / centre - 1.0).abs() < 5e-4, "{hz} × {harmonic}: {at}");
             // Interpolating between samples softens the peaks a little
-            // high up: a quarter of a decibel at 6 kHz.
+            // high up: a tenth of a decibel at 6 kHz.
             assert!(db(peak).abs() < 0.3, "{hz} × {harmonic}: {}", db(peak));
         }
     }
@@ -581,7 +579,7 @@ fn the_diffuser_is_flat_and_stages_add_delay() {
 // one-pole glide whose time constant is 100 ms × Character².
 #[test]
 fn smooth_lags_the_cutoff() {
-    for kind in extended().filter(|k| k.character() == Character::Smooth) {
+    for kind in extended().filter(|k| k.character() == Some("smooth")) {
         let frames = 24_000;
         let step: Vec<f32> = (0..frames)
             .map(|f| if f < 2_000 { 50.0 } else { 90.0 })
@@ -1166,23 +1164,24 @@ fn the_extended_group_is_listed_in_order_with_its_characters() {
             "k35"
         ]
     );
-    let characters: Vec<Character> = extended().map(FilterType::character).collect();
-    use Character::*;
+    let characters: Vec<Option<&str>> = extended().map(FilterType::character).collect();
     assert_eq!(
         characters,
         [
-            Morph,
+            Some("morph"),
             None,
-            Stages,
-            Smooth,
-            Smooth,
-            Smooth,
-            Overdrive,
-            Smooth,
-            SecondFrequency,
-            Morph,
+            Some("stages"),
+            Some("smooth"),
+            Some("smooth"),
+            Some("smooth"),
+            Some("overdrive"),
+            Some("smooth"),
+            Some("second frequency"),
+            Some("morph"),
             None,
-            LowHigh
+            Some("LP/HP")
         ]
     );
+    assert_eq!(extended().collect::<Vec<_>>(), FilterType::EXTENDED);
+    assert_eq!(FilterType::ALL[96..], FilterType::EXTENDED);
 }
