@@ -1112,6 +1112,10 @@ dependencies = [
 [[package]]
 name = "lspk-dsp"
 version = "0.0.0"
+dependencies = [
+ "lspk-params",
+ "lspk-test",
+]
 
 [[package]]
 name = "lspk-example-gain"
@@ -1258,6 +1262,7 @@ name = "lspk-xtask"
 version = "0.0.0"
 dependencies = [
  "clack-host",
+ "lspk-dsp",
  "lspk-plugin",
  "lspk-test",
  "serde_json",

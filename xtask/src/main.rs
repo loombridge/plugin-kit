@@ -1,5 +1,6 @@
 //! Repository tasks for the plug-in kit. Run `cargo xtask help` for the list.
 
+mod bench;
 mod formats;
 mod harness;
 mod private_terms;
@@ -32,6 +33,15 @@ Tasks:
                  With --update, first remake the references whose renders changed (or
                  only those named), recording this platform as the one that made them;
                  say why in the pull request
+  bench [--quick] [--machine NAME]
+                 Build every crate's benchmarks (benches/perf.rs) in release, time each on
+                 this machine, and write the results with the machine, CPU, OS and commit
+                 as JSON under target/bench/
+  bench --gate   Count each benchmark's instructions with Valgrind (x86-64 Linux, as CI
+                 does) and fail if any is more than 3 % above bench/baseline.json
+  bench --update-baseline --reason TEXT [--from COUNTS.json]
+                 Write bench/baseline.json from counts made here (x86-64 Linux) or by CI
+                 (the gate prints them); commit it and say why in the pull request
   validate [<crate>...]
                  Bundle the plug-in crates (the examples if none are named) and run each
                  format's validators on them: clap-validator; Steinberg's VST3 validator,
@@ -107,6 +117,7 @@ fn run(root: &Path, args: &[String]) -> Result<(), String> {
             return formats::print_plugin_info(Path::new(library));
         }
         Some("golden") => return harness::golden(root, &args[1..]),
+        Some("bench") => return bench::bench(root, &args[1..]),
         Some("validate") => return harness::validate(root, &args[1..]),
         _ => {}
     }

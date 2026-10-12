@@ -11,7 +11,16 @@
 # - runs the format validators on the example plug-ins (`cargo xtask
 #   validate`), with clap-validator built from source at a pinned revision and
 #   cached per platform, so it's compiled once until the pin changes, and on
-#   macOS pluginval from a pinned release, checked against its SHA-256.
+#   macOS pluginval from a pinned release, checked against its SHA-256;
+# - on Linux, runs the benchmark gate (`cargo xtask bench --gate`): Valgrind
+#   counts every benchmark's instructions, since timing on shared runners is
+#   too noisy, and the job fails if any is more than 3 % above
+#   bench/baseline.json.
+#
+# Timing belongs on fixed reference machines: a nightly workflow of its own
+# (bench-nightly.yml, beside this file) will run `cargo xtask bench --machine
+# <name>` on each and keep the JSON it writes for a history dashboard, once
+# the machines are set up.
 #
 # A failure on one platform doesn't cancel the others (fail-fast is off), so
 # one run reports every platform's failures.
@@ -138,3 +147,17 @@ jobs:
         run: |
           export PATH="$HOME/.clap-validator/bin:$PATH"
           cargo xtask validate
+
+      - name: Install Valgrind
+        if: ${{ runner.os == 'Linux' && !cancelled() }}
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends valgrind
+
+      # The SIMD paths' agreement test first, printing which paths this
+      # runner has; then the gate.
+      - name: cargo xtask bench --gate
+        if: ${{ runner.os == 'Linux' && !cancelled() }}
+        run: |
+          cargo test --locked -p lspk-dsp --lib simd -- --nocapture
+          cargo xtask bench --gate
