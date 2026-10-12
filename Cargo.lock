@@ -265,6 +265,10 @@ dependencies = [
 [[package]]
 name = "lspk-dsp"
 version = "0.0.0"
+dependencies = [
+ "lspk-params",
+ "lspk-test",
+]
 
 [[package]]
 name = "lspk-example-gain"
@@ -370,6 +374,7 @@ version = "0.0.0"
 name = "lspk-xtask"
 version = "0.0.0"
 dependencies = [
+ "lspk-dsp",
  "lspk-plugin",
  "lspk-test",
  "serde_json",

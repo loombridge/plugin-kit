@@ -4,7 +4,7 @@ The plug-in kit is a set of Rust crates for building audio plug-ins: real-time s
 
 [Reagent](https://github.com/loombridge/reagent), a wavetable synthesiser, is the first plug-in built on it.
 
-The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands`, `lspk-agent`, `lspk-plugin` (with its CLAP export) and `lspk-test` (the headless test harness) hold working code, every other crate is still a stub, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
+The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands`, `lspk-agent`, `lspk-dsp` (oversampling and the SIMD helpers so far), `lspk-plugin` (with its CLAP export) and `lspk-test` (the headless test harness and the performance harness) hold working code, every other crate is still a stub, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
 
 ## Crates
 
@@ -25,7 +25,7 @@ Every crate carries the prefix `lspk-`.
 | `lspk-presets` | The preset format (documented, versioned JSON), the preset library, A/B compare, undo history |
 | `lspk-ui` | The egui widget set, theming, zoom, AccessKit, host-window embedding through baseview |
 | `lspk-plugin` | The format layer: the `Plugin` trait and its CLAP, VST3, Audio Unit, standalone and Beatlayer exports |
-| `lspk-test` | The headless test harness: renders, golden renders and null tests, measurements, format validators, a scripted MCP client |
+| `lspk-test` | The headless test harness: renders, golden renders and null tests, measurements, format validators, a scripted MCP client, benchmarks |
 
 Two example plug-ins under `examples/`, never published, show the `Plugin` trait at its smallest and prove the CLAP export: `lspk-example-gain`, a stereo gain, and `lspk-example-sine`, an eight-voice sine instrument.
 
@@ -59,6 +59,14 @@ Two example plug-ins under `examples/`, never published, show the `Plugin` trait
    ```sh
    cargo xtask golden --update
    ```
+
+1. Every crate's benchmarks live in its `benches/perf.rs`: plug-in scenarios (CPU per block and per voice, idle cost, instance creation, state loading) and micro-benchmarks of hot paths. Time them all on your machine, with the results written as JSON under `target/bench/`:
+
+   ```sh
+   cargo xtask bench
+   ```
+
+   CI counts each benchmark's instructions on Linux and fails a pull request that makes any of them more than 3 % slower than `bench/baseline.json`; [AGENTS.md](AGENTS.md) explains how to update the baseline when a slowdown is intended.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request.
 

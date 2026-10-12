@@ -21,5 +21,11 @@ lspk-plugin = { workspace = true, features = ["clap"] }
 lspk-rt.workspace = true
 lspk-test.workspace = true
 
+# Its benchmark scenarios, timed by `cargo xtask bench` and counted by CI's
+# instruction-count gate.
+[[bench]]
+name = "perf"
+harness = false
+
 [lints]
 workspace = true

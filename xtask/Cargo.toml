@@ -18,6 +18,8 @@ lspk-plugin.workspace = true
 # The golden suites' update switch and the format validators, for
 # `cargo xtask golden` and `cargo xtask validate`.
 lspk-test.workspace = true
+# The SIMD level benchmarks run at, for `cargo xtask bench`'s results.
+lspk-dsp.workspace = true
 serde_json = "1"
 
 [lints]
