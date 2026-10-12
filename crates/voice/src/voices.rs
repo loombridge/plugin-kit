@@ -121,6 +121,10 @@ struct Slot {
     seg_pitch: f32,
     seg_slope: f32,
     seg_start: u64,
+    /// The exact pitch at the segment's end, `seg_end`: the next segment's
+    /// start, unless the voice changes first.
+    seg_end_pitch: f32,
+    seg_end: u64,
     dirty: bool,
 }
 
@@ -133,6 +137,8 @@ impl Slot {
         seg_pitch: 0.0,
         seg_slope: 0.0,
         seg_start: 0,
+        seg_end_pitch: 0.0,
+        seg_end: u64::MAX,
         dirty: true,
     };
 }
@@ -315,12 +321,20 @@ impl Voices {
         for voice in self.block.active_voices() {
             let slot = &self.slots[voice];
             if at_point || slot.dirty {
-                let p0 = self.pitch_at(voice, now);
+                // The last segment's end is this one's start, already
+                // computed, unless the voice has changed since.
+                let p0 = if !slot.dirty && slot.seg_end == now {
+                    slot.seg_end_pitch
+                } else {
+                    self.pitch_at(voice, now)
+                };
                 let p1 = self.pitch_at(voice, next);
                 let slot = &mut self.slots[voice];
                 slot.seg_pitch = p0;
                 slot.seg_slope = (p1 - p0) / (next - now) as f32;
                 slot.seg_start = now;
+                slot.seg_end_pitch = p1;
+                slot.seg_end = next;
                 slot.dirty = false;
             }
             let slot = &self.slots[voice];
