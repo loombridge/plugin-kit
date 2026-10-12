@@ -85,6 +85,14 @@ jobs:
           rustup show active-toolchain
           cargo --version
 
+      # ALSA's headers, which the standalone app's audio (cpal) and MIDI
+      # (midir) build against on Linux.
+      - name: Install Linux system packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends pkg-config libasound2-dev
+
       - name: Restore the dependency cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
