@@ -1,0 +1,3 @@
+0x00000001 param "Gain"
+0x00000002 param "Drive"
+0x00000003 param "Width"

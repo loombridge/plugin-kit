@@ -13,6 +13,7 @@
 use std::path::Path;
 
 /// A vendored component.
+#[derive(Clone, Copy, Debug)]
 pub struct Vendored {
     /// Its folder, from the repository's root.
     pub path: &'static str,
@@ -94,13 +95,14 @@ pub const VENDORED: &[Vendored] = &[
     },
 ];
 
-/// Checks every vendored component against [`VENDORED`] and deny.toml.
-pub fn check(root: &Path, tracked: &[String]) -> Result<(), String> {
+/// Checks every vendored component against `components` (the kit's are
+/// [`VENDORED`]) and deny.toml.
+pub fn check(root: &Path, components: &[Vendored], tracked: &[String]) -> Result<(), String> {
     let deny = std::fs::read_to_string(root.join("deny.toml"))
         .map_err(|e| format!("couldn't read deny.toml: {e}"))?;
     let allowed = allowed_licences(&deny);
     let mut problems = Vec::new();
-    for component in VENDORED {
+    for component in components {
         let file = root.join(component.path).join(component.file);
         match std::fs::read_to_string(&file) {
             Ok(text) if text.contains(component.phrase) => {}
@@ -118,12 +120,12 @@ pub fn check(root: &Path, tracked: &[String]) -> Result<(), String> {
             ));
         }
     }
-    problems.extend(unlisted(tracked));
+    problems.extend(unlisted(components, tracked));
     problems.extend(restrictive(root, tracked));
     if problems.is_empty() {
         eprintln!(
-            "{} vendored components, each under a licence the kit allows",
-            VENDORED.len()
+            "{} vendored components, each under a licence deny.toml allows",
+            components.len()
         );
         Ok(())
     } else {
@@ -133,16 +135,16 @@ pub fn check(root: &Path, tracked: &[String]) -> Result<(), String> {
 
 /// Each tracked file in a `vendor` folder that belongs to no listed
 /// component, one line each.
-fn unlisted(tracked: &[String]) -> Vec<String> {
+fn unlisted(components: &[Vendored], tracked: &[String]) -> Vec<String> {
     tracked
         .iter()
         .filter(|path| path.split('/').any(|part| part == "vendor"))
         .filter(|path| {
-            !VENDORED
+            !components
                 .iter()
                 .any(|c| path.starts_with(&format!("{}/", c.path)))
         })
-        .map(|path| format!("{path} is vendored but belongs to no component in VENDORED"))
+        .map(|path| format!("{path} is vendored but belongs to no listed component"))
         .collect()
 }
 
@@ -196,7 +198,7 @@ mod tests {
             "crates/clap-wrapper/vendor/other/LICENSE".to_owned(),
             "crates/clap-wrapper/src/lib.rs".to_owned(),
         ];
-        let problems = unlisted(&tracked);
+        let problems = unlisted(VENDORED, &tracked);
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].contains("vendor/other/LICENSE"));
     }

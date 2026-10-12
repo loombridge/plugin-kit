@@ -18,7 +18,7 @@ Every crate carries the prefix `lspk-`.
 | `lspk-agent` | The agent interface: MCP over stdio and over Streamable HTTP on loopback, tokens, permission prompts, the discovery file for running instances |
 | `lspk-dsp` | DSP building blocks: oscillators, interpolators, filters, envelopes, LFOs, oversampling, FFT, resampling, SIMD helpers, waveshapers |
 | `lspk-voice` | Voice allocation and stealing, mono, legato and glide, unison, MPE and per-note expression |
-| `lspk-mod` | The modulation engine: sources, destinations, depth, curves, per-voice and global routes |
+| `lspk-mod` | The modulation engine: a 64-slot matrix of sources, destinations, curves and auxiliary sources, per-voice and global, sample-accurate, at audio rate only where a destination needs it; its edits as commands |
 | `lspk-fx` | The effects library, each effect usable inside a plug-in and as a plug-in of its own |
 | `lspk-wavetable` | The wavetable model, WAV import and export, mipmaps, the wavetable oscillator, spectral operations, resynthesis |
 | `lspk-seq` | Arpeggiator and step and clip sequencing, synced to the host's tempo |
@@ -29,6 +29,7 @@ Every crate carries the prefix `lspk-`.
 | `lspk-clap-wrapper` | free-audio's [clap-wrapper](https://github.com/free-audio/clap-wrapper) and the SDK sources it needs (VST3 SDK, AudioUnitSDK), vendored and built with `cc`, which make the VST3 and Audio Unit v2 exports from the CLAP one |
 | `lspk-standalone` | The standalone app: any plug-in run as an application, with audio and MIDI device choice, the computer keyboard, settings kept between runs, and state files |
 | `lspk-test` | The headless test harness: renders, golden renders and null tests, measurements, format validators, a scripted MCP client, benchmarks |
+| `lspk-xtask` | `cargo xtask`: the repository tasks (check, bundle, validate, golden, bench) for the kit and for every plug-in built on it, and `new-plugin`, which generates a plug-in repository from the templates in `xtask/templates` |
 
 Three example plug-ins under `examples/`, never published, show the `Plugin` trait and prove the format exports: `lspk-example-gain`, a stereo gain, `lspk-example-sine`, an eight-voice sine instrument, and `lspk-example-modular`, a small synthesiser of fixed modules and a two-slot effects rack, which proves the parameter space in every format. Gain and Sine also build as standalone apps (`src/main.rs`, one line), which `cargo xtask bundle` lays out beside their plug-in formats.
 
@@ -89,6 +90,21 @@ Three example plug-ins under `examples/`, never published, show the `Plugin` tra
    open target/bundle/lspk-example-sine.app
    cargo run --release -p lspk-example-sine --bin lspk-example-sine-standalone -- --run-for 2 --note 69
    ```
+
+## Start a new plug-in
+
+`cargo xtask new-plugin` generates a plug-in repository of its own, outside the kit, that passes every check from its first commit:
+
+```sh
+cargo xtask new-plugin bright-delay --kind effect
+cargo xtask new-plugin glass-pad --kind instrument --licence gpl-3.0-or-later --id com.example.glass-pad
+```
+
+The repository goes beside the kit's checkout (`--dir` puts it elsewhere). It holds a workspace pinned to the kit's toolchain, its licence files (MIT OR Apache-2.0 by default, or GPL-3.0-or-later), and one plug-in crate: an eight-voice instrument or a stereo effect with a few parameters in a parameter space, exported as CLAP, VST3, Audio Unit v2 and a standalone app, with the generic editor and the agent interface. Its tests cover the formats, the agent interface, golden renders, measurements and the parameter ID list; its benchmark suite starts with a baseline, and its CI runs the check, the validators and the benchmark gate on all three platforms. Its own `cargo xtask` (check, bundle, validate, golden, bench) is a few lines that run this repository's tasks, from the `lspk-xtask` crate. README, CONTRIBUTING (with the Developer Certificate of Origin), AGENTS.md and CLAUDE.md come with it.
+
+Every kit crate it uses comes from this repository at one git revision: the checkout's commit, which must be on `origin/main` (or pass `--rev`). Its CONTRIBUTING.md explains working on the plug-in and the kit at once through Cargo's `[patch]`. Every generated file is staged, so `git commit` makes its first commit. Nothing is created on GitHub.
+
+`cargo xtask template-check` generates an instrument and an effect into a temporary folder, built against your checkout, and runs their checks, as CI does on every pull request.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request.
 
