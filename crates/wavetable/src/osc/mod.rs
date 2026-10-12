@@ -7,7 +7,7 @@
 //! | [`Params`] | The oscillator's controls, shared by its voices: pitch offsets, frame, Smooth frames, phase and phase random, the phase mode, key tracking, level |
 //! | [`Inputs`] | What a render reads per lane: pitch, its glide step, and audio-rate pitch and frame modulation |
 //! | [`Onset`] | How a voice starts a note, which decides whether its phase restarts |
-//! | [`PhaseStage`], [`WaveStage`] | Hooks for shapers: one bends the phase before the read, the other the value after it |
+//! | [`PhaseStage`], [`WaveStage`] | Hooks for shapers: one bends the phase before the read (and may sum several weighted [`Reads`]), the other the value after it |
 //!
 //! # Lanes
 //!
@@ -218,6 +218,61 @@ pub struct Inputs<'a> {
     pub frame_mod: Option<&'a [f32]>,
 }
 
+/// The most table reads a [`PhaseStage`] asks for at one frame.
+pub const MAX_READS: usize = 4;
+
+/// What a [`PhaseStage`] has a vector of lanes read at one frame: the sum
+/// of up to [`MAX_READS`] reads of the table, each at its own phase and
+/// weighted by its own gain. Shapers use more than one read to crossfade
+/// between two branches of a phase map (a sync reset, a pulse's edge) or
+/// to mix a wave with itself half a cycle on.
+#[derive(Clone, Copy, Debug)]
+pub struct Reads<S: F32s> {
+    /// Where each read is, per lane.
+    pub phase: [S::U32s; MAX_READS],
+    /// Each read's gain, per lane.
+    pub gain: [S; MAX_READS],
+    /// How many reads to sum, from 1 to [`MAX_READS`]; 0 means one read at
+    /// `phase[0]` with no gain applied.
+    pub count: usize,
+}
+
+impl<S: F32s> Reads<S> {
+    /// One read at `phase`, unweighted.
+    #[inline(always)]
+    #[must_use]
+    pub fn one(phase: S::U32s) -> Self {
+        Self {
+            phase: [phase; MAX_READS],
+            gain: [S::splat(1.0); MAX_READS],
+            count: 0,
+        }
+    }
+}
+
+/// [`Reads`] for one lane, for the scalar path.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LaneReads {
+    /// Where each read is.
+    pub phase: [u32; MAX_READS],
+    /// Each read's gain.
+    pub gain: [f32; MAX_READS],
+    /// How many reads to sum; 0 means one read at `phase[0]`, unweighted.
+    pub count: usize,
+}
+
+impl LaneReads {
+    /// One read at `phase`, unweighted.
+    #[must_use]
+    pub const fn one(phase: u32) -> Self {
+        Self {
+            phase: [phase; MAX_READS],
+            gain: [1.0; MAX_READS],
+            count: 0,
+        }
+    }
+}
+
 /// A stage that bends each lane's phase before the table is read: where
 /// R1.4's phase shapers (sync, bend, pulse width, mirror, remaps) plug in.
 ///
@@ -237,6 +292,36 @@ pub trait PhaseStage {
 
     /// The same for lane `lane` alone, for the scalar path.
     fn shape_lane(&mut self, lane: usize, frame: usize, phase: u32, increment: u32) -> u32;
+
+    /// The reads lanes `lanes..lanes + S::LANES` sum at frame `frame`: by
+    /// default one, at [`shape`](Self::shape)'s phase.
+    #[inline(always)]
+    fn reads<S: F32s>(
+        &mut self,
+        lanes: usize,
+        frame: usize,
+        phase: S::U32s,
+        increment: S::U32s,
+    ) -> Reads<S> {
+        Reads::one(self.shape::<S>(lanes, frame, phase, increment))
+    }
+
+    /// The same for lane `lane` alone, for the scalar path.
+    #[inline(always)]
+    fn reads_lane(&mut self, lane: usize, frame: usize, phase: u32, increment: u32) -> LaneReads {
+        LaneReads::one(self.shape_lane(lane, frame, phase, increment))
+    }
+
+    /// How many times faster than its running phase lane `lane` reads the
+    /// table at most over frames `frames` of this render: the stage's
+    /// steepest slope. The lane picks its mipmap level for its increment
+    /// times this, so a stage that reads faster than the note still reads
+    /// a level whose harmonics stay below Nyquist. By default 1.
+    #[inline(always)]
+    fn stretch(&mut self, lane: usize, frames: std::ops::Range<usize>) -> f32 {
+        let _ = (lane, frames);
+        1.0
+    }
 }
 
 /// A stage that bends each lane's value after the read, before Level: where
@@ -249,6 +334,23 @@ pub trait WaveStage {
 
     /// The same for lane `lane` alone, for the scalar path.
     fn shape_lane(&mut self, lane: usize, frame: usize, value: f32) -> f32;
+
+    /// [`shape`](Self::shape), also told the lanes' phase `increment` per
+    /// frame, for a stage that follows the note's pitch (a filter whose
+    /// cutoff is a harmonic of the note). By default the increment is
+    /// ignored.
+    #[inline(always)]
+    fn shape_at<S: F32s>(&mut self, lanes: usize, frame: usize, increment: S::U32s, value: S) -> S {
+        let _ = increment;
+        self.shape::<S>(lanes, frame, value)
+    }
+
+    /// The same for lane `lane` alone, for the scalar path.
+    #[inline(always)]
+    fn shape_at_lane(&mut self, lane: usize, frame: usize, increment: u32, value: f32) -> f32 {
+        let _ = increment;
+        self.shape_lane(lane, frame, value)
+    }
 }
 
 /// A stage that changes nothing, for either hook.

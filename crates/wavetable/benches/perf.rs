@@ -13,6 +13,7 @@ use lspk_dsp::simd;
 use lspk_test::bench::Suite;
 use lspk_voice::{Unison, UnisonLanes};
 use lspk_wavetable::osc::{Inputs, Layout, Onset, Oscillator};
+use lspk_wavetable::shaper::{Mode, ShapedOscillator, ShaperInputs};
 use lspk_wavetable::{Cache, Interpolation, MAX_FRAMES, Table, Wavetable, increment, wav};
 
 /// Frames in a block, as hosts commonly use.
@@ -103,7 +104,79 @@ fn main() -> ExitCode {
         }
     }
 
+    // The shapers, a family at a time: 32 voices across lanes, a block per
+    // call, slot 1 in the family's mode at 60 % (and the two-slot case with
+    // slot 2 too). Off measures what the shapers cost when they do nothing.
+    for (name, modes) in [
+        ("shaper/off", [Mode::Off, Mode::Off]),
+        ("shaper/smooth-pinch", [Mode::Pinch, Mode::Off]),
+        ("shaper/sync", [Mode::Sync, Mode::Off]),
+        ("shaper/edges-pulse-width", [Mode::PulseWidth, Mode::Off]),
+        ("shaper/quantise", [Mode::Quantise, Mode::Off]),
+        ("shaper/remap-drawn", [Mode::RemapDrawn, Mode::Off]),
+        ("shaper/odd-even", [Mode::OddEven, Mode::Off]),
+        ("shaper/filter-low-pass", [Mode::LowPass, Mode::Off]),
+        ("shaper/distortion-valve", [Mode::Valve, Mode::Off]),
+        ("shaper/distortion-hard-clip", [Mode::HardClip, Mode::Off]),
+        ("shaper/sync-then-valve", [Mode::Sync, Mode::Valve]),
+    ] {
+        suite.micro(&format!("{name}/simd"), BLOCK, move || {
+            shaped(32, modes, false)
+        });
+    }
+    // One voice, scalar, with audio-rate amount modulation.
+    suite.micro("shaper/distortion-valve-modulated/one-voice", BLOCK, || {
+        shaped(1, [Mode::Valve, Mode::Off], true)
+    });
+
     suite.main()
+}
+
+/// A shaped oscillator of `voices` voices with slots in `modes` at 60 %, and
+/// a routine rendering a block of it, its amounts modulated at audio rate
+/// with `modulated`.
+fn shaped(voices: usize, modes: [Mode; 2], modulated: bool) -> impl FnMut() {
+    let table = Cache::global()
+        .share(wav::read(&wav_bytes(16, Interpolation::None), None).expect("a valid file"));
+    let osc = Oscillator::new(
+        table,
+        Layout {
+            voices,
+            lanes_per_voice: 1,
+        },
+        48_000.0,
+        BLOCK,
+        1,
+    );
+    let mut osc = ShapedOscillator::new(osc);
+    osc.osc_mut().params_mut().frame = 4.5;
+    for (slot, mode) in osc.shapers_mut().slots.iter_mut().zip(modes) {
+        slot.mode = mode;
+        slot.amount = 60.0;
+    }
+    let keys: Vec<f32> = (0..voices).map(|v| 36.0 + v as f32 * 1.5).collect();
+    for (voice, &key) in keys.iter().enumerate() {
+        osc.start(voice, key, Onset::Fresh);
+    }
+    let lanes = osc.osc().lane_count();
+    let mut pitch = vec![0.0; lanes];
+    pitch[..voices].copy_from_slice(&keys);
+    let modulation: Vec<f32> = (0..BLOCK * lanes)
+        .map(|i| 20.0 * ((i / lanes) as f32 * 0.01 + (i % lanes) as f32).sin())
+        .collect();
+    let mut out = vec![0.0f32; BLOCK * lanes];
+    move || {
+        let inputs = Inputs {
+            lanes: voices,
+            pitch: &pitch,
+            ..Inputs::default()
+        };
+        let mods = ShaperInputs {
+            amount_mod: [modulated.then_some(&modulation[..]), None],
+        };
+        osc.process(BLOCK, &inputs, &mods, &mut out);
+        black_box(&out);
+    }
 }
 
 /// The block unison is benchmarked at: the plan's reference, 128 frames.
