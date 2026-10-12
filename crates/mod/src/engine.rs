@@ -243,7 +243,7 @@ struct State {
 /// audio thread, each block:
 ///
 /// 1. [`begin_block`](Self::begin_block) takes a newly compiled program
-///    from the [mailbox](crate::mailbox), if one is waiting;
+///    from the [mailbox](crate::mailbox()), if one is waiting;
 /// 2. set what changed: held values ([`set_held`](Self::set_held)), bases
 ///    ([`set_base`](Self::set_base)), slot amounts
 ///    ([`set_amount`](Self::set_amount)), notes
@@ -556,23 +556,28 @@ impl Engine {
         let st = &mut self.st;
         let len = range.len();
         st.chunks.clear();
-        let mut k = range.start;
-        let mut phase = (st.clock % CONTROL_PERIOD as u64) as usize;
-        let mut first = true;
-        while k < range.end {
-            let n = (CONTROL_PERIOD - phase).min(range.end - k);
-            st.chunks.push(Chunk {
-                start: k,
-                len: n,
-                phase,
-                tick: phase == 0 || (first && st.any_fresh),
-            });
-            k += n;
-            phase = 0;
-            first = false;
-        }
         let p = &mut *self.program;
-        if !p.routes.is_empty() {
+        if p.routes.is_empty() {
+            // An empty matrix: nothing to evaluate, only time to keep.
+            if st.gliding > 0 {
+                st.advance_glides(len);
+            }
+        } else {
+            let mut k = range.start;
+            let mut phase = (st.clock % CONTROL_PERIOD as u64) as usize;
+            let mut first = true;
+            while k < range.end {
+                let n = (CONTROL_PERIOD - phase).min(range.end - k);
+                st.chunks.push(Chunk {
+                    start: k,
+                    len: n,
+                    phase,
+                    tick: phase == 0 || (first && st.any_fresh),
+                });
+                k += n;
+                phase = 0;
+                first = false;
+            }
             let count = st.active[..st.config.voices].iter().filter(|a| **a).count();
             let load = count as f32 / st.voice_limit as f32;
             for &src in &st.load {
@@ -594,8 +599,6 @@ impl Engine {
             if let Err(run) = simd::dispatch_at(level, run) {
                 let _ = simd::dispatch_at(Level::Portable, run);
             }
-        } else if st.gliding > 0 {
-            st.advance_glides(len);
         }
         st.clock += len as u64;
         if st.any_fresh {

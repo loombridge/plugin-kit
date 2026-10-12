@@ -12,7 +12,7 @@
 //! | [`curve`] | Source and aux curves, drawn curves with slew, the velocity and key curves |
 //! | [`program`] | The compiled matrix |
 //! | [`engine`] | The engine that runs it on the audio thread |
-//! | [`mailbox`] | Handing compiled programs to the audio thread |
+//! | [`mailbox`](mod@mailbox) | Handing compiled programs to the audio thread |
 //!
 //! Rules cited as "engine-core Rn" are the plug-in kit's engine
 //! specification, section 11 (velocity and note curves) and 12
@@ -82,7 +82,7 @@
 //! route reaches and their buffers simply don't exist in it. A route
 //! whose amount or output is 0 at run time is skipped, and so is every
 //! voice that isn't playing. The engine takes a new program at a block's
-//! start ([`Engine::begin_block`], through a [`mailbox`]), and an empty
+//! start ([`Engine::begin_block`], through a [`mailbox()`]), and an empty
 //! matrix costs one branch per call.
 //!
 //! # Real-time safety

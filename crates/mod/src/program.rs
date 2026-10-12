@@ -177,7 +177,7 @@ pub enum SkipReason {
 /// Compile with [`Program::compile`] off the audio thread, then hand the
 /// program to the [`Engine`](crate::Engine), directly with
 /// [`Engine::swap`](crate::Engine::swap) or through a
-/// [`mailbox`](crate::mailbox), and it takes over at the next block.
+/// [`mailbox`](crate::mailbox()), and it takes over at the next block.
 #[derive(Clone, Debug)]
 pub struct Program {
     pub(crate) config: Config,
