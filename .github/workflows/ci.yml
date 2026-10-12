@@ -17,6 +17,12 @@
 #   too noisy, and the job fails if any is more than 3 % above
 #   bench/baseline.json.
 #
+# A second job, `template (Linux x64)`, keeps `cargo xtask new-plugin`'s
+# templates from rotting: `cargo xtask template-check` generates an
+# instrument and an effect, built against this checkout through Cargo's
+# [patch], and runs each one's check, validate, golden and benchmark gate
+# (against the baselines in xtask/templates), as its own CI would.
+#
 # Timing belongs on fixed reference machines: a nightly workflow of its own
 # (bench-nightly.yml, beside this file) will run `cargo xtask bench --machine
 # <name>` on each and keep the JSON it writes for a history dashboard, once
@@ -169,3 +175,64 @@ jobs:
         run: |
           cargo test --locked -p lspk-dsp --lib simd -- --nocapture
           cargo xtask bench --gate
+
+  template:
+    name: template (Linux x64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install --no-self-update
+          rustup show active-toolchain
+          cargo --version
+
+      # ALSA's headers for the standalone app, and Valgrind for the gate.
+      - name: Install Linux system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends pkg-config libasound2-dev valgrind
+
+      - name: Restore the dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-deny and cargo-nextest
+        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-deny@0.20.2,cargo-nextest@0.9.146
+          fallback: none
+
+      - name: Restore clap-validator
+        id: clap-validator
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.clap-validator
+          key: clap-validator-${{ runner.os }}-${{ runner.arch }}-${{ env.CLAP_VALIDATOR_REV }}
+
+      - name: Install clap-validator
+        if: steps.clap-validator.outputs.cache-hit != 'true'
+        run: >-
+          cargo install --locked
+          --git https://github.com/free-audio/clap-validator
+          --rev "$CLAP_VALIDATOR_REV"
+          --root "$HOME/.clap-validator"
+          clap-validator
+
+      # The generated plug-ins pin a kit revision Cargo can fetch (main's, as
+      # this run started from it); the [patch] then builds them against this
+      # checkout.
+      - name: cargo xtask template-check
+        env:
+          NEXTEST_PROFILE: ci
+          KIT_REV: ${{ github.event.pull_request.base.sha || github.sha }}
+        run: |
+          export PATH="$HOME/.clap-validator/bin:$PATH"
+          cargo xtask template-check --dir "$RUNNER_TEMP/template-check" --rev "$KIT_REV"

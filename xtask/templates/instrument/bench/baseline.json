@@ -1,0 +1,7 @@
+{
+  "about": "Instructions each benchmark's measured region runs, counted by Callgrind on x86-64 Linux at the AVX2 SIMD level. CI fails a pull request that makes any of them more than 3 % higher; change them only with `cargo xtask bench --update-baseline --reason ...`, and say why in the pull request.",
+  "platform": "x86_64-linux",
+  "simd": "avx2",
+  "valgrind": null,
+  "instructions": {}
+}
