@@ -5,12 +5,37 @@
 use std::hint::black_box;
 use std::process::ExitCode;
 
-use lspk_dsp::{LinearSmoother, Oversampler, simd};
+use lspk_dsp::envelope::{Timing, Trigger};
+use lspk_dsp::{Envelope, EnvelopeBank, EnvelopeParams, LinearSmoother, Oversampler, simd};
 use lspk_test::bench::Suite;
 use lspk_test::signal;
 
 /// Frames in a block, as hosts commonly use.
 const BLOCK: usize = 512;
+
+/// Voices in the envelope benchmarks.
+const VOICES: usize = 32;
+
+/// Short stages, so a block crosses several of them: every stage, bent.
+const BUSY: EnvelopeParams = EnvelopeParams {
+    attack: 2.0,
+    hold: 1.0,
+    decay: 4.0,
+    sustain: 0.5,
+    release: 3.0,
+    attack_curve: 0.3,
+    ..EnvelopeParams::AMP
+};
+
+/// What happens to voice `voice` at the start of block `block`: notes 8
+/// blocks long, each voice's starting a block after the last's.
+fn envelope_event(block: usize, voice: usize) -> Option<bool> {
+    match (block + voice) % 8 {
+        0 => Some(true),
+        4 => Some(false),
+        _ => None,
+    }
+}
 
 fn main() -> ExitCode {
     let mut suite = Suite::new("lspk-dsp");
@@ -61,6 +86,88 @@ fn main() -> ExitCode {
         move || {
             simd::mix(&mut bus, &source, 0.25);
             black_box(&bus);
+        }
+    });
+
+    // Envelopes, a block per call. One voice, scalar: the per-sample cost
+    // of a single envelope crossing stages.
+    suite.micro("envelope/one", BLOCK, || {
+        let mut envelope = Envelope::new(BUSY, Timing::new(48_000.0));
+        let mut out = vec![0.0; BLOCK];
+        let mut block = 0;
+        move || {
+            match envelope_event(block, 0) {
+                Some(true) => envelope.trigger(Trigger::New),
+                Some(false) => envelope.release(),
+                None => {}
+            }
+            block += 1;
+            envelope.process(&mut out);
+            black_box(&out);
+        }
+    });
+
+    // 32 voices with staggered notes, as 32 scalar envelopes and as one
+    // bank in SIMD lanes, so the two compare.
+    suite.micro("envelope/scalar-32", BLOCK, || {
+        let mut envelopes = vec![Envelope::new(BUSY, Timing::new(48_000.0)); VOICES];
+        let mut out = vec![0.0; BLOCK * VOICES];
+        let mut block = 0;
+        move || {
+            for (voice, (envelope, out)) in envelopes
+                .iter_mut()
+                .zip(out.as_chunks_mut::<BLOCK>().0)
+                .enumerate()
+            {
+                match envelope_event(block, voice) {
+                    Some(true) => envelope.trigger(Trigger::New),
+                    Some(false) => envelope.release(),
+                    None => {}
+                }
+                envelope.process(out);
+            }
+            block += 1;
+            black_box(&out);
+        }
+    });
+    suite.micro("envelope/simd-32", BLOCK, || {
+        let mut bank = EnvelopeBank::new(VOICES, BUSY, Timing::new(48_000.0));
+        let mut out = vec![0.0; BLOCK * bank.stride()];
+        let mut block = 0;
+        move || {
+            for voice in 0..VOICES {
+                match envelope_event(block, voice) {
+                    Some(true) => bank.trigger(voice, Trigger::New),
+                    Some(false) => bank.release(voice),
+                    None => {}
+                }
+            }
+            block += 1;
+            bank.process(&mut out);
+            black_box(&out);
+        }
+    });
+
+    // 32 voices holding their sustain, and 32 idle: what a bank costs when
+    // nothing moves.
+    suite.micro("envelope/sustain-32", BLOCK, || {
+        let mut bank = EnvelopeBank::new(VOICES, BUSY, Timing::new(48_000.0));
+        let mut out = vec![0.0; BLOCK * bank.stride()];
+        for voice in 0..VOICES {
+            bank.trigger(voice, Trigger::New);
+        }
+        bank.process(&mut out);
+        move || {
+            bank.process(&mut out);
+            black_box(&out);
+        }
+    });
+    suite.micro("envelope/idle-32", BLOCK, || {
+        let mut bank = EnvelopeBank::new(VOICES, BUSY, Timing::new(48_000.0));
+        let mut out = vec![0.0; BLOCK * bank.stride()];
+        move || {
+            bank.process(&mut out);
+            black_box(&out);
         }
     });
 

@@ -1300,6 +1300,7 @@ name = "lspk-dsp"
 version = "0.0.0"
 dependencies = [
  "lspk-params",
+ "lspk-rt",
  "lspk-test",
 ]
 

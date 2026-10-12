@@ -1,6 +1,11 @@
 {
   "about": "Instructions each benchmark's measured region runs, counted by Callgrind on x86-64 Linux at the AVX2 SIMD level. CI fails a pull request that makes any of them more than 3 % higher; change them only with `cargo xtask bench --update-baseline --reason ...`, and say why in the pull request.",
   "instructions": {
+    "lspk-dsp/envelope/idle-32": 11272,
+    "lspk-dsp/envelope/one": 3534,
+    "lspk-dsp/envelope/scalar-32": 120781,
+    "lspk-dsp/envelope/simd-32": 28481,
+    "lspk-dsp/envelope/sustain-32": 11272,
     "lspk-dsp/oversampler/2x": 502192,
     "lspk-dsp/oversampler/4x": 1503243,
     "lspk-dsp/oversampler/8x": 3505254,
@@ -24,7 +29,7 @@
     "lspk-example-sine/one-voice/process": 7578149
   },
   "platform": "x86_64-linux",
-  "reason": "R0.14: making an instance now asks the plug-in for its parameter space and the host link keeps the slots' selection, and loading state checks whether a slot changed its module; about 200 instructions more to create an instance and 35 more to load state, on the main thread only. Processing is unchanged.",
+  "reason": "R1.11 adds lspk-dsp's envelope benchmarks: one voice, 32 voices scalar and in SIMD lanes, and a sustaining and an idle 32-voice bank. The example plug-ins' counts are R0.14's, unchanged.",
   "simd": "avx2",
   "valgrind": "valgrind-3.22.0"
 }
