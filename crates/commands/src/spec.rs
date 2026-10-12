@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use schemars::{JsonSchema, Schema};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::context::Context;
@@ -31,7 +31,11 @@ use crate::schema;
 /// assert_eq!(insert.area(), "track");
 /// assert_eq!(insert.permission, Some(Permission::Edit));
 /// ```
-#[derive(Clone, Debug, Serialize)]
+///
+/// A spec serialises to JSON and reads back from it, which is how a plug-in
+/// hands its commands to a host (the plug-in kit's agent-commands
+/// extension). Parts left out read as missing.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CommandSpec {
     /// The command's stable ID, such as `track.create`.
     ///
@@ -44,20 +48,22 @@ pub struct CommandSpec {
     pub label: Cow<'static, str>,
     /// What the command does, when to use it, and what it changes, written
     /// for a model in whole sentences. Empty until set.
+    #[serde(default)]
     pub description: Cow<'static, str>,
     /// What the command may touch, once set.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission: Option<Permission>,
     /// Where a person reaches the command.
+    #[serde(default)]
     pub contexts: Vec<Context>,
     /// The shortcuts that run it by default.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bindings: Vec<Binding>,
     /// The JSON Schema of its arguments, once set. Always an object schema.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<Schema>,
     /// The JSON Schema of its result, once set.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Schema>,
 }
 
@@ -164,15 +170,15 @@ impl CommandSpec {
 /// selected objects in the shortcut's context, text typed into a field, or
 /// the result of a gesture. A binding that toggles a switch sets it to the
 /// opposite of its current value.
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Binding {
     /// The shortcut's ID in the shortcut reference, such as `S-EDIT-006`.
     pub shortcut: Cow<'static, str>,
     /// The arguments the binding fixes.
-    #[serde(skip_serializing_if = "Map::is_empty")]
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
     pub args: Map<String, Value>,
     /// The boolean argument the binding toggles, if any.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub toggles: Option<Cow<'static, str>>,
 }
 

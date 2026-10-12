@@ -84,6 +84,13 @@ impl Registry {
         Ok(())
     }
 
+    /// Takes the command with this ID out of the registry, as a host does
+    /// when the plug-in or device that offered it goes; `None` if there's
+    /// none.
+    pub fn remove(&mut self, id: &str) -> Option<CommandSpec> {
+        self.commands.remove(id)
+    }
+
     /// The command with this ID.
     #[must_use]
     pub fn get(&self, id: &str) -> Option<&CommandSpec> {
@@ -543,6 +550,23 @@ mod tests {
             .iter()
             .map(ToString::to_string)
             .collect()
+    }
+
+    #[test]
+    fn a_spec_reads_back_from_its_json_and_leaves_a_registry() {
+        let spec = complete("mixer.set_solo").binding(Binding::new("S-MIX-001").arg("solo", true));
+        let json = serde_json::to_value(&spec).unwrap();
+        let back: CommandSpec = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&back).unwrap(), json);
+        let bare: CommandSpec =
+            serde_json::from_value(serde_json::json!({"id": "a.b", "label": "B"})).unwrap();
+        assert_eq!((bare.permission, bare.args.is_none()), (None, true));
+
+        let mut registry = Registry::new();
+        registry.register(back).unwrap();
+        assert!(registry.remove("mixer.set_solo").is_some());
+        assert!(registry.remove("mixer.set_solo").is_none());
+        assert!(registry.is_empty());
     }
 
     #[test]
