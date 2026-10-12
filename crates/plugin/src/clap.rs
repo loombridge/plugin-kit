@@ -580,7 +580,9 @@ impl<P: Plugin> ClapMainThread<'_, P> {
 
     /// Runs command `id` with `args`, JSON or none.
     fn run_json(&self, id: &CStr, args: Option<&CStr>) -> Result<serde_json::Value, String> {
-        let id = id.to_str().map_err(|_| "the command's ID isn't UTF-8".to_owned())?;
+        let id = id
+            .to_str()
+            .map_err(|_| "the command's ID isn't UTF-8".to_owned())?;
         let args = match args.map(CStr::to_bytes) {
             None | Some(b"") => serde_json::Value::Null,
             Some(bytes) => serde_json::from_slice(bytes)

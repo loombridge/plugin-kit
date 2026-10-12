@@ -137,8 +137,9 @@ mod raw {
     #[allow(non_camel_case_types, reason = "the name in the C declaration")]
     pub struct clap_plugin_agent_commands {
         /// Writes the plug-in's commands to `out`.
-        pub list:
-            Option<unsafe extern "C" fn(plugin: *const clap_plugin, out: *const clap_ostream) -> bool>,
+        pub list: Option<
+            unsafe extern "C" fn(plugin: *const clap_plugin, out: *const clap_ostream) -> bool,
+        >,
         /// Runs a command and writes its result, or why it failed, to `out`.
         pub run: Option<
             unsafe extern "C" fn(
@@ -155,7 +156,7 @@ mod raw {
     pub struct PluginAgentCommands(
         // Read by the host side only (the `clap-host` feature).
         #[cfg_attr(not(feature = "clap-host"), allow(dead_code))]
-        pub(crate) RawExtension<PluginExtensionSide, clap_plugin_agent_commands>,
+        pub(crate)  RawExtension<PluginExtensionSide, clap_plugin_agent_commands>,
     );
 
     impl std::fmt::Debug for PluginAgentCommands {
@@ -195,7 +196,10 @@ mod host {
         /// # Errors
         ///
         /// The plug-in couldn't list them, or its list is broken.
-        pub fn list(&self, plugin: &mut PluginMainThreadHandle<'_>) -> Result<Vec<CommandSpec>, String> {
+        pub fn list(
+            &self,
+            plugin: &mut PluginMainThreadHandle<'_>,
+        ) -> Result<Vec<CommandSpec>, String> {
             let list = plugin
                 .use_extension(&self.0)
                 .list
@@ -303,7 +307,9 @@ mod tests {
         assert_eq!(ok, Ok(Value::Null));
         let unknown = run_checked(&registry, "gain.nope", &json!({}), |_, _| Ok(json!(1)));
         assert!(unknown.unwrap_err().contains("no command"));
-        let extra = run_checked(&registry, "gain.reset", &json!({"x": 1}), |_, _| Ok(json!(1)));
+        let extra = run_checked(&registry, "gain.reset", &json!({"x": 1}), |_, _| {
+            Ok(json!(1))
+        });
         assert!(extra.unwrap_err().contains("schema"));
     }
 }
