@@ -2,7 +2,7 @@
 # it: every test in a process of its own, as many at once as the machine has
 # cores. Doctests run separately, with `cargo test --doc`.
 
-# Keep in step with NEXTEST_VERSION in xtask/src/main.rs and the CI workflow.
+# Keep in step with NEXTEST_VERSION in xtask/src/lib.rs and the CI workflow.
 nextest-version = "0.9.146"
 
 [profile.default]

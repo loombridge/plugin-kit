@@ -746,4 +746,48 @@ mod tests {
         assert!(!rejected(report, "GPL-3.0-or-later"));
         assert!(rejected("license = GPL-3.0-or-later", "GPL-3.0-or-later"));
     }
+
+    /// Every place the kit names the cargo-nextest version agrees with
+    /// [`NEXTEST_VERSION`]: the CI's install steps, `.config/nextest.toml`,
+    /// `README.md` and `AGENTS.md`.
+    #[test]
+    fn one_nextest_version_everywhere() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the kit root");
+        let read = |path: &str| {
+            std::fs::read_to_string(root.join(path)).unwrap_or_else(|e| panic!("{path}: {e}"))
+        };
+        // Every version written right after `marker` in `text`.
+        let after = |text: &str, marker: &str| -> Vec<String> {
+            text.match_indices(marker)
+                .map(|(i, _)| {
+                    let rest = &text[i + marker.len()..];
+                    let end = rest
+                        .find(|c: char| !c.is_ascii_digit() && c != '.')
+                        .unwrap_or(rest.len());
+                    rest[..end].to_owned()
+                })
+                .collect()
+        };
+
+        let ci = read(".github/workflows/ci.yml");
+        let pins = after(&ci, "cargo-nextest@");
+        assert!(pins.len() >= 2, "the CI's cargo-nextest pins: {pins:?}");
+        for pin in pins {
+            assert_eq!(pin, NEXTEST_VERSION, "the CI installs cargo-nextest@{pin}");
+        }
+
+        for path in ["README.md", "AGENTS.md"] {
+            let pins = after(&read(path), "cargo-nextest@");
+            assert_eq!(pins, [NEXTEST_VERSION], "{path}");
+        }
+
+        let config = read(".config/nextest.toml");
+        assert_eq!(
+            after(&config, "nextest-version = \""),
+            [NEXTEST_VERSION],
+            ".config/nextest.toml"
+        );
+    }
 }
