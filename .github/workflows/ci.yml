@@ -114,7 +114,7 @@ jobs:
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # cargo-nextest's version is pinned in xtask/src/main.rs and
+      # cargo-nextest's version is pinned in xtask/src/lib.rs and
       # .config/nextest.toml too; keep the three in step.
       - name: Install cargo-deny and cargo-nextest
         uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
