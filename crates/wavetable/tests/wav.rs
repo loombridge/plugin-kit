@@ -356,3 +356,98 @@ fn bad_files_and_sizes_are_errors() {
         Err(Error::TooManyFrames(MAX_FRAMES + 1))
     );
 }
+
+#[test]
+fn damaged_wav_files_are_rejected_or_read_as_far_as_they_go() {
+    let data = vec![0u8; 4 * FRAME_SIZE];
+
+    // No fmt chunk.
+    let mut no_fmt = wav_file(3, 32, 1, &data, None);
+    let at = no_fmt.windows(4).position(|w| w == b"fmt ").unwrap();
+    no_fmt[at..at + 4].copy_from_slice(b"junk");
+    assert_eq!(
+        wav::read(&no_fmt, None),
+        Err(Error::Malformed("no fmt chunk"))
+    );
+
+    // No data chunk.
+    let mut no_data = wav_file(3, 32, 1, &data, None);
+    let at = no_data.windows(4).position(|w| w == b"data").unwrap();
+    no_data[at..at + 4].copy_from_slice(b"junk");
+    assert_eq!(
+        wav::read(&no_data, None),
+        Err(Error::Malformed("no data chunk"))
+    );
+
+    // A fmt chunk too short (< 16 bytes).
+    let mut short_fmt = wav_file(3, 32, 1, &data, None);
+    let at = short_fmt.windows(4).position(|w| w == b"fmt ").unwrap();
+    short_fmt[at + 4..at + 8].copy_from_slice(&15u32.to_le_bytes());
+    assert_eq!(
+        wav::read(&short_fmt, None),
+        Err(Error::Malformed("fmt chunk too short"))
+    );
+
+    // An extensible fmt chunk too short (< 26 bytes).
+    let mut short_ext = wav_file(0xFFFE, 32, 1, &data, None);
+    let at = short_ext.windows(4).position(|w| w == b"fmt ").unwrap();
+    short_ext[at + 4..at + 8].copy_from_slice(&20u32.to_le_bytes());
+    assert_eq!(
+        wav::read(&short_ext, None),
+        Err(Error::Malformed("extensible fmt chunk too short"))
+    );
+
+    // Zero channels.
+    let zero_ch = wav_file(3, 32, 0, &data, None);
+    assert_eq!(
+        wav::read(&zero_ch, None),
+        Err(Error::Malformed("no channels"))
+    );
+
+    // A malformed clm chunk is ignored, falling back to FRAME_SIZE and default flags.
+    let valid_data = vec![0u8; 2 * FRAME_SIZE * 4];
+    let malformed_clm = wav_file(3, 32, 1, &valid_data, Some("not a valid clm chunk"));
+    let table = wav::read(&malformed_clm, None).unwrap();
+    assert_eq!(table.frame_count(), 2);
+    assert_eq!(table.interpolation(), Interpolation::None);
+    assert!(!table.factory());
+
+    // A clm chunk with an invalid frame size below 2 errors.
+    let bad_size_clm = wav_file(3, 32, 1, &valid_data, Some("<!>0 00000000"));
+    assert_eq!(wav::read(&bad_size_clm, None), Err(Error::FrameSize(0)));
+
+    // A truncated last chunk is read as far as it goes.
+    // 1. Chunk length in header extends past the end of the file.
+    let mut truncated_header = wav_file(3, 32, 1, &valid_data, None);
+    let at = truncated_header
+        .windows(4)
+        .position(|w| w == b"data")
+        .unwrap();
+    truncated_header[at + 4..at + 8].copy_from_slice(&u32::MAX.to_le_bytes());
+    let table = wav::read(&truncated_header, None).unwrap();
+    assert_eq!(table.frame_count(), 2);
+
+    // 2. Physical file ends early with partial frames after whole frames.
+    let three_frames = vec![0u8; 3 * FRAME_SIZE * 4];
+    let mut truncated_file = wav_file(3, 32, 1, &three_frames, None);
+    // Truncate the file so only 2 full frames and a partial frame remain.
+    truncated_file.truncate(truncated_file.len() - FRAME_SIZE * 4 + 17);
+    let table = wav::read(&truncated_file, None).unwrap();
+    assert_eq!(table.frame_count(), 2);
+}
+
+#[test]
+fn every_prefix_of_a_valid_file_returns_ok_or_err_and_never_panics() {
+    let data = vec![0u8; 2 * FRAME_SIZE * 4];
+    let valid = wav_file(
+        3,
+        32,
+        1,
+        &data,
+        Some("<!>2048 20000000 wavetable (lspk-wavetable)"),
+    );
+    for prefix_len in 0..=valid.len() {
+        let res = wav::read(&valid[..prefix_len], None);
+        assert!(matches!(res, Ok(_) | Err(_)));
+    }
+}
