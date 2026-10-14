@@ -75,12 +75,17 @@ pub enum ParamKind {
     /// A gain or level. Its value is a linear amplitude factor, from 0
     /// (−∞ dB, silence) to `max_db`'s factor, and it reads in dB. The
     /// control's travel is even in dB from `floor_db` at its bottom step to
-    /// `max_db` at the top, and the very bottom is −∞ dB (rule G1).
+    /// `max_db` at the top, and the very bottom is −∞ dB (rule G1), unless
+    /// given a `taper` mapping travel to the linear factor.
     Gain {
         /// The highest gain, in dB.
         max_db: f64,
         /// The lowest finite gain on the control's travel, in dB.
         floor_db: f64,
+        /// How the control's travel maps onto the linear amplitude factor.
+        /// Left out or `None`, the travel is even in dB from `floor_db` (rule G1).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        taper: Option<Taper>,
     },
     /// On (1) or off (0).
     Toggle,
@@ -189,6 +194,7 @@ impl ParamDescriptor {
             ParamKind::Gain {
                 max_db,
                 floor_db: DEFAULT_FLOOR_DB,
+                taper: None,
             },
             default,
         )
@@ -264,11 +270,35 @@ impl ParamDescriptor {
     }
 
     /// The same, with a power taper: the value is `min + (max − min) × nᵏ`
-    /// at travel `n`, `k` from 2 to 8 (a continuous parameter only).
+    /// at travel `n`, `k` from 2 to 8.
     #[must_use]
     pub fn power(mut self, k: u8) -> Self {
-        if let ParamKind::Continuous { taper, .. } = &mut self.kind {
-            *taper = Taper::Power(k);
+        match &mut self.kind {
+            ParamKind::Continuous { taper, .. } => *taper = Taper::Power(k),
+            ParamKind::Gain { taper, .. } => *taper = Some(Taper::Power(k)),
+            _ => {}
+        }
+        self
+    }
+
+    /// The same, with a linear taper in the value.
+    #[must_use]
+    pub fn linear(mut self) -> Self {
+        match &mut self.kind {
+            ParamKind::Continuous { taper, .. } => *taper = Taper::Linear,
+            ParamKind::Gain { taper, .. } => *taper = Some(Taper::Linear),
+            _ => {}
+        }
+        self
+    }
+
+    /// The same, with `taper` mapping travel to value.
+    #[must_use]
+    pub fn taper(mut self, t: Taper) -> Self {
+        match &mut self.kind {
+            ParamKind::Continuous { taper, .. } => *taper = t,
+            ParamKind::Gain { taper, .. } => *taper = Some(t),
+            _ => {}
         }
         self
     }
@@ -367,17 +397,36 @@ impl ParamDescriptor {
                 taper: Taper::Power(k),
                 ..
             } => ((value - min) / (max - min)).powf(1.0 / f64::from(*k)),
-            ParamKind::Gain { max_db, floor_db } => {
-                if value <= 0.0 {
-                    0.0
-                } else {
-                    let db = gain_to_db(value);
-                    let step = 1.0 / (max_db - floor_db);
-                    // The bottom of the travel is −∞; the floor is one dB's
-                    // worth of travel above it.
-                    (step + (db - floor_db) / (max_db - floor_db) * (1.0 - step)).max(0.0)
+            ParamKind::Gain {
+                max_db,
+                floor_db,
+                taper,
+            } => match taper {
+                Some(Taper::Linear) => {
+                    let max = self.max();
+                    if max > 0.0 { value / max } else { 0.0 }
                 }
-            }
+                Some(Taper::Power(k)) => {
+                    let max = self.max();
+                    if max > 0.0 && value > 0.0 {
+                        (value / max).powf(1.0 / f64::from(*k))
+                    } else {
+                        0.0
+                    }
+                }
+                Some(Taper::Logarithmic) => 0.0,
+                None => {
+                    if value <= 0.0 {
+                        0.0
+                    } else {
+                        let db = gain_to_db(value);
+                        let step = 1.0 / (max_db - floor_db);
+                        // The bottom of the travel is −∞; the floor is one dB's
+                        // worth of travel above it.
+                        (step + (db - floor_db) / (max_db - floor_db) * (1.0 - step)).max(0.0)
+                    }
+                }
+            },
             _ => {
                 if max > min {
                     (value - min) / (max - min)
@@ -407,15 +456,24 @@ impl ParamDescriptor {
                 taper: Taper::Power(k),
                 ..
             } => min + (max - min) * n.powi(i32::from(*k)),
-            ParamKind::Gain { max_db, floor_db } => {
-                let step = 1.0 / (max_db - floor_db);
-                if n < step / 2.0 {
-                    0.0
-                } else {
-                    let along = ((n - step) / (1.0 - step)).max(0.0);
-                    db_to_gain(floor_db + along * (max_db - floor_db))
+            ParamKind::Gain {
+                max_db,
+                floor_db,
+                taper,
+            } => match taper {
+                Some(Taper::Linear) => self.max() * n,
+                Some(Taper::Power(k)) => self.max() * n.powi(i32::from(*k)),
+                Some(Taper::Logarithmic) => 0.0,
+                None => {
+                    let step = 1.0 / (max_db - floor_db);
+                    if n < step / 2.0 {
+                        0.0
+                    } else {
+                        let along = ((n - step) / (1.0 - step)).max(0.0);
+                        db_to_gain(floor_db + along * (max_db - floor_db))
+                    }
                 }
-            }
+            },
             _ => min + n * (max - min),
         };
         self.clamp(value)
@@ -516,9 +574,21 @@ impl ParamDescriptor {
                     return fail("has a power taper outside 2 to 8");
                 }
             }
-            ParamKind::Gain { max_db, floor_db } => {
+            ParamKind::Gain {
+                max_db,
+                floor_db,
+                taper,
+            } => {
                 if !(floor_db.is_finite() && max_db.is_finite() && floor_db < max_db) {
                     return fail("has a gain floor that isn't below its top");
+                }
+                if let Some(Taper::Power(k)) = taper
+                    && !(2..=8).contains(k)
+                {
+                    return fail("has a power taper outside 2 to 8");
+                }
+                if let Some(Taper::Logarithmic) = taper {
+                    return fail("has a logarithmic taper on a gain");
                 }
             }
             ParamKind::Choice { choices } => {
@@ -677,6 +747,44 @@ mod tests {
         );
         assert!(time.clone().power(1).check().is_err());
         assert!(time.power(9).check().is_err());
+    }
+
+    #[test]
+    fn a_gain_parameter_can_take_a_power_or_linear_taper() {
+        let power_gain =
+            ParamDescriptor::gain(id(10), "Filter Level", gain_to_db(4.0), 0.0).power(2);
+        power_gain.check().unwrap();
+        assert_eq!(power_gain.min(), 0.0);
+        assert!((power_gain.max() - 4.0).abs() < 1e-12);
+        assert_eq!(power_gain.denormalize(0.0), 0.0);
+        assert!((power_gain.denormalize(0.25) - 0.25).abs() < 1e-12);
+        assert!((power_gain.denormalize(0.5) - 1.0).abs() < 1e-12);
+        assert!((power_gain.denormalize(1.0) - 4.0).abs() < 1e-12);
+        assert_eq!(power_gain.normalize(0.0), 0.0);
+        assert!((power_gain.normalize(0.25) - 0.25).abs() < 1e-12);
+        assert!((power_gain.normalize(1.0) - 0.5).abs() < 1e-12);
+        assert!((power_gain.normalize(4.0) - 1.0).abs() < 1e-12);
+        assert_eq!(power_gain.format(0.0), MINUS_INFINITY_DB);
+        assert_eq!(power_gain.format(1.0), "0.00 dB");
+        assert_eq!(power_gain.format(4.0), "12.0 dB");
+        assert_eq!(power_gain.parse("-inf"), Some(0.0));
+        assert_eq!(power_gain.parse("0 dB"), Some(1.0));
+
+        let linear_gain = ParamDescriptor::gain(id(11), "Amp", gain_to_db(2.0), 0.0).linear();
+        linear_gain.check().unwrap();
+        assert_eq!(linear_gain.min(), 0.0);
+        assert!((linear_gain.max() - 2.0).abs() < 1e-12);
+        assert_eq!(linear_gain.denormalize(0.0), 0.0);
+        assert!((linear_gain.denormalize(0.25) - 0.5).abs() < 1e-12);
+        assert!((linear_gain.denormalize(0.5) - 1.0).abs() < 1e-12);
+        assert!((linear_gain.denormalize(1.0) - 2.0).abs() < 1e-12);
+        assert_eq!(linear_gain.normalize(0.0), 0.0);
+        assert!((linear_gain.normalize(0.5) - 0.25).abs() < 1e-12);
+        assert!((linear_gain.normalize(1.0) - 0.5).abs() < 1e-12);
+        assert!((linear_gain.normalize(2.0) - 1.0).abs() < 1e-12);
+        assert_eq!(linear_gain.format(2.0), "6.0 dB");
+        assert!(linear_gain.clone().power(1).check().is_err());
+        assert!(linear_gain.power(9).check().is_err());
     }
 
     #[test]
