@@ -549,4 +549,293 @@ mod tests {
         assert!(!pattern_matches(r"^-?\d+$", "x"));
         assert!(!pattern_matches(r"^-?\d+$", "-"));
     }
+
+    /// Checks `value` against the literal object schema `schema`.
+    fn checks(schema: &Value, value: &Value) -> Result<(), String> {
+        validate(&Schema::from(schema.as_object().unwrap().clone()), value)
+    }
+
+    /// The failure of `value` against `schema`, panicking if it passes.
+    fn failure(schema: &Value, value: &Value) -> String {
+        checks(schema, value).unwrap_err()
+    }
+
+    #[test]
+    fn refs_resolve_to_their_definitions() {
+        let schema = json!({
+            "$defs": {
+                "Pos": { "type": "integer", "minimum": 0 },
+                "Offset": { "$ref": "#/$defs/Pos" },
+            },
+            "$ref": "#/$defs/Pos",
+        });
+        assert_eq!(checks(&schema, &json!(5)), Ok(()));
+        assert_eq!(
+            failure(&schema, &json!(-1)),
+            "value: -1 is below the minimum 0"
+        );
+        assert_eq!(
+            failure(&schema, &json!("5")),
+            "value: expected integer, found \"5\""
+        );
+        assert_eq!(
+            failure(&json!({ "$ref": "#/$defs/Missing" }), &json!(1)),
+            "value: unresolved reference #/$defs/Missing"
+        );
+        let chained = json!({
+            "$defs": {
+                "Pos": { "type": "integer" },
+                "Offset": { "$ref": "#/$defs/Pos" },
+            },
+            "$ref": "#/$defs/Offset",
+        });
+        assert_eq!(checks(&chained, &json!(2)), Ok(()));
+        assert_eq!(
+            failure(&chained, &json!("x")),
+            "value: expected integer, found \"x\""
+        );
+    }
+
+    #[test]
+    fn the_type_keyword_lets_only_its_types_through() {
+        let integer = json!({ "type": "integer" });
+        assert_eq!(checks(&integer, &json!(42)), Ok(()));
+        assert_eq!(
+            failure(&integer, &json!(1.0)),
+            "value: expected integer, found 1.0"
+        );
+        assert_eq!(
+            failure(&integer, &json!("42")),
+            "value: expected integer, found \"42\""
+        );
+        let number = json!({ "type": "number" });
+        assert_eq!(checks(&number, &json!(1.0)), Ok(()));
+        assert_eq!(
+            failure(&number, &json!(true)),
+            "value: expected number, found true"
+        );
+        let either = json!({ "type": ["null", "string"] });
+        assert_eq!(checks(&either, &json!(null)), Ok(()));
+        assert_eq!(checks(&either, &json!("x")), Ok(()));
+        assert_eq!(
+            failure(&either, &json!(1)),
+            "value: expected null or string, found 1"
+        );
+    }
+
+    #[test]
+    fn the_const_keyword_lets_only_its_value_through() {
+        let on = json!({ "const": "on" });
+        assert_eq!(checks(&on, &json!("on")), Ok(()));
+        assert_eq!(
+            failure(&on, &json!("off")),
+            "value: expected \"on\", found \"off\""
+        );
+        let three = json!({ "const": 3 });
+        assert_eq!(checks(&three, &json!(3)), Ok(()));
+        assert_eq!(failure(&three, &json!(4)), "value: expected 3, found 4");
+    }
+
+    #[test]
+    fn the_enum_keyword_matches_its_values_exactly() {
+        let colours = json!({ "enum": ["red", "green"] });
+        assert_eq!(checks(&colours, &json!("red")), Ok(()));
+        assert_eq!(
+            failure(&colours, &json!("blue")),
+            "value: \"blue\" isn't one of [\"red\",\"green\"]"
+        );
+        let one = json!({ "enum": [1] });
+        assert_eq!(checks(&one, &json!(1)), Ok(()));
+        assert_eq!(failure(&one, &json!("1")), "value: \"1\" isn't one of [1]");
+        let nothing = json!({ "enum": [null] });
+        assert_eq!(checks(&nothing, &json!(null)), Ok(()));
+        assert_eq!(
+            failure(&nothing, &json!(false)),
+            "value: false isn't one of [null]"
+        );
+    }
+
+    #[test]
+    fn one_of_wants_exactly_one_match() {
+        let labelled = json!({ "oneOf": [{ "type": "integer" }, { "type": "string" }] });
+        assert_eq!(checks(&labelled, &json!(7)), Ok(()));
+        assert_eq!(checks(&labelled, &json!("x")), Ok(()));
+        assert_eq!(
+            failure(&labelled, &json!(true)),
+            "value: true matches none of the variants (value: expected integer, found true; value: expected string, found true)"
+        );
+        let overlapping = json!({ "oneOf": [{ "type": "integer" }, { "minimum": 0 }] });
+        assert_eq!(
+            failure(&overlapping, &json!(5)),
+            "value: 5 matches more than one variant"
+        );
+    }
+
+    #[test]
+    fn any_of_is_happy_with_one_match() {
+        let either = json!({ "anyOf": [{ "type": "integer" }, { "type": "string" }] });
+        assert_eq!(checks(&either, &json!(7)), Ok(()));
+        assert_eq!(checks(&either, &json!("x")), Ok(()));
+        assert_eq!(
+            failure(&either, &json!(true)),
+            "value: true matches none of the options (value: expected integer, found true; value: expected string, found true)"
+        );
+    }
+
+    #[test]
+    fn all_of_needs_every_part_to_pass() {
+        let schema = json!({ "allOf": [{ "type": "integer" }, { "minimum": 2 }] });
+        assert_eq!(checks(&schema, &json!(3)), Ok(()));
+        assert_eq!(
+            failure(&schema, &json!(1)),
+            "value: 1 is below the minimum 2"
+        );
+        assert_eq!(
+            failure(&schema, &json!("x")),
+            "value: expected integer, found \"x\""
+        );
+    }
+
+    #[test]
+    fn properties_check_the_fields_they_name() {
+        let schema = json!({ "type": "object", "properties": { "name": { "type": "string" } } });
+        assert_eq!(checks(&schema, &json!({ "name": "a" })), Ok(()));
+        assert_eq!(checks(&schema, &json!({})), Ok(()));
+        assert_eq!(checks(&schema, &json!({ "name": "a", "extra": 1 })), Ok(()));
+        assert_eq!(
+            failure(&schema, &json!({ "name": 1 })),
+            "value.name: expected string, found 1"
+        );
+    }
+
+    #[test]
+    fn required_names_the_missing_field() {
+        let schema = json!({ "type": "object", "required": ["name"] });
+        assert_eq!(checks(&schema, &json!({ "name": 1 })), Ok(()));
+        assert_eq!(failure(&schema, &json!({})), "value: missing `name`");
+        assert_eq!(
+            failure(&schema, &json!({ "other": 1 })),
+            "value: missing `name`"
+        );
+    }
+
+    #[test]
+    fn additional_properties_rules_over_unnamed_fields() {
+        let closed = json!({ "type": "object", "additionalProperties": false });
+        assert_eq!(checks(&closed, &json!({})), Ok(()));
+        assert_eq!(
+            failure(&closed, &json!({ "x": 1 })),
+            "value: unknown field `x`"
+        );
+        let typed = json!({
+            "type": "object",
+            "properties": { "name": { "type": "string" } },
+            "additionalProperties": { "type": "integer" },
+        });
+        assert_eq!(checks(&typed, &json!({ "name": "a", "extra": 1 })), Ok(()));
+        assert_eq!(
+            failure(&typed, &json!({ "extra": "y" })),
+            "value.extra: expected integer, found \"y\""
+        );
+        let open = json!({ "type": "object" });
+        assert_eq!(checks(&open, &json!({ "x": 1 })), Ok(()));
+    }
+
+    #[test]
+    fn pattern_properties_take_the_integer_keys() {
+        let schema = json!({
+            "type": "object",
+            "patternProperties": { r"^-?\d+$": { "type": "integer" } },
+        });
+        assert_eq!(checks(&schema, &json!({ "3": 7 })), Ok(()));
+        assert_eq!(checks(&schema, &json!({ "-4": 2 })), Ok(()));
+        assert_eq!(checks(&schema, &json!({ "3": 7, "name": "x" })), Ok(()));
+        assert_eq!(
+            failure(&schema, &json!({ "3": "x" })),
+            "value.3: expected integer, found \"x\""
+        );
+    }
+
+    #[test]
+    fn items_check_the_elements() {
+        let schema = json!({ "type": "array", "items": { "type": "integer" } });
+        assert_eq!(checks(&schema, &json!([])), Ok(()));
+        assert_eq!(checks(&schema, &json!([1, 2])), Ok(()));
+        assert_eq!(
+            failure(&schema, &json!([1, "x"])),
+            "value[1]: expected integer, found \"x\""
+        );
+    }
+
+    #[test]
+    fn prefix_items_check_the_first_positions() {
+        let schema = json!({
+            "type": "array",
+            "prefixItems": [{ "type": "string" }, { "type": "integer" }],
+            "items": { "type": "integer" },
+        });
+        assert_eq!(checks(&schema, &json!(["a", 1, 2])), Ok(()));
+        assert_eq!(
+            failure(&schema, &json!([1, 2])),
+            "value[0]: expected string, found 1"
+        );
+        assert_eq!(
+            failure(&schema, &json!(["a", "x"])),
+            "value[1]: expected integer, found \"x\""
+        );
+        assert_eq!(
+            failure(&schema, &json!(["a", 1, "x"])),
+            "value[2]: expected integer, found \"x\""
+        );
+    }
+
+    #[test]
+    fn item_counts_bound_the_array() {
+        let schema = json!({ "type": "array", "minItems": 1, "maxItems": 2 });
+        assert_eq!(checks(&schema, &json!([1])), Ok(()));
+        assert_eq!(checks(&schema, &json!([1, 2])), Ok(()));
+        assert_eq!(failure(&schema, &json!([])), "value: fewer than 1 items");
+        assert_eq!(
+            failure(&schema, &json!([1, 2, 3])),
+            "value: more than 2 items"
+        );
+    }
+
+    #[test]
+    fn numeric_limits_bound_the_numbers() {
+        let schema = json!({
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10,
+            "exclusiveMinimum": 0,
+            "exclusiveMaximum": 10,
+        });
+        assert_eq!(checks(&schema, &json!(5)), Ok(()));
+        assert_eq!(checks(&schema, &json!(2.5)), Ok(()));
+        assert_eq!(
+            failure(&schema, &json!(-1)),
+            "value: -1 is below the minimum 0"
+        );
+        assert_eq!(
+            failure(&schema, &json!(11)),
+            "value: 11 is above the maximum 10"
+        );
+        assert_eq!(failure(&schema, &json!(0)), "value: 0 isn't above 0");
+        assert_eq!(failure(&schema, &json!(10)), "value: 10 isn't below 10");
+    }
+
+    #[test]
+    fn length_limits_bound_the_strings() {
+        let schema = json!({ "type": "string", "minLength": 1, "maxLength": 3 });
+        assert_eq!(checks(&schema, &json!("a")), Ok(()));
+        assert_eq!(checks(&schema, &json!("éé")), Ok(()));
+        assert_eq!(
+            failure(&schema, &json!("")),
+            "value: shorter than 1 characters"
+        );
+        assert_eq!(
+            failure(&schema, &json!("éééé")),
+            "value: longer than 3 characters"
+        );
+    }
 }
