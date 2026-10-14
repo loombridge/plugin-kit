@@ -480,3 +480,404 @@ pub(crate) fn run_params(
     };
     Some(result.and_then(|r| serde_json::to_value(r).map_err(|e| e.to_string())))
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use lspk_params::{ModuleType, ParamDescriptor, ParamId, ParamSpace, ParamUnit};
+
+    fn test_values() -> ParamValues {
+        ParamValues::new(vec![
+            ParamDescriptor::gain(ParamId(1), "Gain", 0.0, 0.0),
+            ParamDescriptor::continuous(ParamId(2), "Mix", (0.0, 100.0), 50.0, ParamUnit::Percent),
+            ParamDescriptor::toggle(ParamId(3), "Bypass", false),
+            ParamDescriptor::choice(ParamId(4), "Mode", &["Clean", "Warm", "Hot"], 0),
+        ])
+        .expect("valid parameters")
+    }
+
+    fn modular_values() -> ParamValues {
+        let drive = ModuleType::new(40, "drive", "Drive")
+            .param(ParamDescriptor::continuous(
+                ParamId(0),
+                "Amount",
+                (0.0, 100.0),
+                25.0,
+                ParamUnit::Percent,
+            ))
+            .param(ParamDescriptor::choice(
+                ParamId(1),
+                "Shape",
+                &["Soft", "Hard"],
+                0,
+            ));
+        let echo = ModuleType::new(41, "echo", "Echo").param(
+            ParamDescriptor::continuous(
+                ParamId(0),
+                "Time",
+                (1.0, 1000.0),
+                250.0,
+                ParamUnit::Milliseconds,
+            )
+            .logarithmic(),
+        );
+        let space = ParamSpace::builder()
+            .global(ParamDescriptor::gain(ParamId(1), "Gain", 0.0, 0.0))
+            .slots((10, "fx", "FX"), "Type", &["1"], vec![drive, echo])
+            .build()
+            .expect("valid space");
+        let descriptors = space.descriptors();
+        ParamValues::with_space(descriptors, Arc::new(space)).expect("valid modular parameters")
+    }
+
+    #[test]
+    fn a_request_that_names_no_parameter_fails_with_a_helpful_error() {
+        let values = test_values();
+
+        // Unknown ID in resolve.
+        let err = resolve(&values, &ParamRef::Id(999)).unwrap_err();
+        assert_eq!(
+            err,
+            "no parameter is number 999; the parameters are Gain (1), Mix (2), Bypass (3) and Mode (4)"
+        );
+
+        // Unknown name in resolve.
+        let err = resolve(&values, &ParamRef::Name("Nonexistent".into())).unwrap_err();
+        assert_eq!(
+            err,
+            "no parameter is called `Nonexistent`; the parameters are Gain (1), Mix (2), Bypass (3) and Mode (4)"
+        );
+
+        // Unknown name in plan.
+        let err = plan(
+            &values,
+            &SetArgs {
+                values: vec![NewValue {
+                    param: ParamRef::Name("Nonexistent".into()),
+                    value: Some(1.0),
+                    text: None,
+                }],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "no parameter is called `Nonexistent`; the parameters are Gain (1), Mix (2), Bypass (3) and Mode (4)"
+        );
+
+        // Unknown ID in plan.
+        let err = plan(
+            &values,
+            &SetArgs {
+                values: vec![NewValue {
+                    param: ParamRef::Id(999),
+                    value: Some(1.0),
+                    text: None,
+                }],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "no parameter is number 999; the parameters are Gain (1), Mix (2), Bypass (3) and Mode (4)"
+        );
+
+        // Unknown ID in get.
+        let err = get(&values, &[ParamRef::Id(42)]).unwrap_err();
+        assert_eq!(
+            err,
+            "no parameter is number 42; the parameters are Gain (1), Mix (2), Bypass (3) and Mode (4)"
+        );
+
+        // In a modular space, an unassigned or hidden reserved parameter names nothing.
+        let modular = modular_values();
+        let space = modular.space().unwrap();
+        let slot = &space.slots()[0];
+        // Reserved parameter 5 is unused because span is at most 2.
+        let unused_reserved_id = slot.reserved_id(5).0;
+        let err = resolve(&modular, &ParamRef::Id(unused_reserved_id)).unwrap_err();
+        assert!(
+            err.starts_with(&format!(
+                "no parameter is number {unused_reserved_id}; the parameters are "
+            )),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn giving_both_or_neither_of_value_and_text_is_refused() {
+        let values = test_values();
+
+        // Both value and text.
+        let err = plan(
+            &values,
+            &SetArgs {
+                values: vec![NewValue {
+                    param: ParamRef::Name("Gain".into()),
+                    value: Some(0.5),
+                    text: Some("-6 dB".into()),
+                }],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "give Gain either a `value` or a `text`, not both or neither"
+        );
+
+        // Neither value nor text.
+        let err = plan(
+            &values,
+            &SetArgs {
+                values: vec![NewValue {
+                    param: ParamRef::Name("Gain".into()),
+                    value: None,
+                    text: None,
+                }],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "give Gain either a `value` or a `text`, not both or neither"
+        );
+    }
+
+    #[test]
+    fn text_the_parameter_cannot_read_is_refused() {
+        let values = test_values();
+
+        // Unparseable text for continuous/gain parameter.
+        let err = plan(
+            &values,
+            &SetArgs {
+                values: vec![NewValue {
+                    param: ParamRef::Name("Gain".into()),
+                    value: None,
+                    text: Some("loud".into()),
+                }],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, "`loud` isn't a value Gain can take");
+
+        // Unparseable text for choice parameter.
+        let err = plan(
+            &values,
+            &SetArgs {
+                values: vec![NewValue {
+                    param: ParamRef::Name("Mode".into()),
+                    value: None,
+                    text: Some("Distorted".into()),
+                }],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(err, "`Distorted` isn't a value Mode can take");
+    }
+
+    #[test]
+    fn values_outside_range_are_clamped() {
+        let values = test_values();
+
+        // Continuous parameter above max (0..100 %).
+        let planned = plan(
+            &values,
+            &SetArgs {
+                values: vec![NewValue {
+                    param: ParamRef::Name("Mix".into()),
+                    value: Some(150.0),
+                    text: None,
+                }],
+            },
+        )
+        .expect("planned");
+        assert_eq!(planned, vec![(ParamId(2), 100.0)]);
+
+        // Continuous parameter below min.
+        let planned = plan(
+            &values,
+            &SetArgs {
+                values: vec![NewValue {
+                    param: ParamRef::Name("Mix".into()),
+                    value: Some(-20.0),
+                    text: None,
+                }],
+            },
+        )
+        .expect("planned");
+        assert_eq!(planned, vec![(ParamId(2), 0.0)]);
+
+        // Gain parameter above max (0 dB = 1.0 linear).
+        let planned = plan(
+            &values,
+            &SetArgs {
+                values: vec![NewValue {
+                    param: ParamRef::Name("Gain".into()),
+                    value: Some(2.5),
+                    text: None,
+                }],
+            },
+        )
+        .expect("planned");
+        assert_eq!(planned, vec![(ParamId(1), 1.0)]);
+
+        // Clamping also applies to parsed text values.
+        let planned = plan(
+            &values,
+            &SetArgs {
+                values: vec![NewValue {
+                    param: ParamRef::Name("Mix".into()),
+                    value: None,
+                    text: Some("200 %".into()),
+                }],
+            },
+        )
+        .expect("planned");
+        assert_eq!(planned, vec![(ParamId(2), 100.0)]);
+    }
+
+    #[test]
+    fn non_finite_values_are_refused() {
+        let values = test_values();
+
+        let nan_err = plan(
+            &values,
+            &SetArgs {
+                values: vec![NewValue {
+                    param: ParamRef::Name("Gain".into()),
+                    value: Some(f64::NAN),
+                    text: None,
+                }],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(nan_err, "Gain's value isn't a number");
+
+        let inf_err = plan(
+            &values,
+            &SetArgs {
+                values: vec![NewValue {
+                    param: ParamRef::Name("Gain".into()),
+                    value: Some(f64::INFINITY),
+                    text: None,
+                }],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(inf_err, "Gain's value isn't a number");
+
+        let neg_inf_err = plan(
+            &values,
+            &SetArgs {
+                values: vec![NewValue {
+                    param: ParamRef::Name("Gain".into()),
+                    value: Some(f64::NEG_INFINITY),
+                    text: None,
+                }],
+            },
+        )
+        .unwrap_err();
+        assert_eq!(neg_inf_err, "Gain's value isn't a number");
+    }
+
+    #[test]
+    fn a_slots_type_must_be_set_before_its_modules_parameters() {
+        let modular = modular_values();
+
+        // Slot 1 defaults to Drive, which has Amount and Shape.
+        // Echo's Time parameter is hidden / non-existent initially.
+        let err = plan(
+            &modular,
+            &SetArgs {
+                values: vec![NewValue {
+                    param: ParamRef::Name("fx \"1\" / param \"Time\"".into()),
+                    value: None,
+                    text: Some("500 ms".into()),
+                }],
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with(
+                "no parameter is called `fx \"1\" / param \"Time\"`; the parameters are "
+            ),
+            "{err}"
+        );
+
+        // When the slot's type is set first in the same call, Echo's Time parameter resolves.
+        let planned = plan(
+            &modular,
+            &SetArgs {
+                values: vec![
+                    NewValue {
+                        param: ParamRef::Name("FX 1 Type".into()),
+                        value: None,
+                        text: Some("Echo".into()),
+                    },
+                    NewValue {
+                        param: ParamRef::Name("fx \"1\" / param \"Time\"".into()),
+                        value: None,
+                        text: Some("500 ms".into()),
+                    },
+                ],
+            },
+        )
+        .expect("planned");
+        assert_eq!(planned.len(), 2);
+
+        // Inverting the order fails: the slot's type must precede its module's parameters.
+        let err = plan(
+            &modular,
+            &SetArgs {
+                values: vec![
+                    NewValue {
+                        param: ParamRef::Name("fx \"1\" / param \"Time\"".into()),
+                        value: None,
+                        text: Some("500 ms".into()),
+                    },
+                    NewValue {
+                        param: ParamRef::Name("FX 1 Type".into()),
+                        value: None,
+                        text: Some("Echo".into()),
+                    },
+                ],
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with(
+                "no parameter is called `fx \"1\" / param \"Time\"`; the parameters are "
+            ),
+            "{err}"
+        );
+
+        // Similarly, once the slot is set to Echo, Drive's parameters (Amount) can no longer be resolved.
+        let err = plan(
+            &modular,
+            &SetArgs {
+                values: vec![
+                    NewValue {
+                        param: ParamRef::Name("FX 1 Type".into()),
+                        value: None,
+                        text: Some("Echo".into()),
+                    },
+                    NewValue {
+                        param: ParamRef::Name("fx \"1\" / param \"Amount\"".into()),
+                        value: Some(50.0),
+                        text: None,
+                    },
+                ],
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.starts_with(
+                "no parameter is called `fx \"1\" / param \"Amount\"`; the parameters are "
+            ),
+            "{err}"
+        );
+    }
+}
