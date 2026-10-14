@@ -610,14 +610,30 @@ impl ParamDescriptor {
     }
 }
 
-/// Decimals that show `value` to three significant figures, as Live shows
+/// `value` rounded to `decimals` places.
+fn rounded_to(value: f64, decimals: i32) -> f64 {
+    let scale = 10f64.powi(decimals);
+    (value * scale).round() / scale
+}
+
+/// The decimals that show `value` in three significant figures, as Live shows
 /// most values (observed: 1.00 ms, 30.0 ms, 80.0 Hz, 1.24 kHz, 4.00 : 1).
+/// Chosen after rounding, as the dB and per cent boundaries are: a value that
+/// rounds up to a new power of ten takes one fewer decimal, so the text keeps
+/// three figures (9.996 is "10.0", 99.96 "100.0").
 fn significant(value: f64) -> usize {
     if value == 0.0 {
         return 2;
     }
-    let magnitude = value.abs().log10().floor() as i32;
-    (2 - magnitude).clamp(0, 2) as usize
+    let abs = value.abs();
+    let magnitude = abs.log10().floor() as i32;
+    let rule = 2 - magnitude;
+    let rule = if rounded_to(abs, rule) >= 10f64.powi(magnitude + 1) {
+        rule - 1
+    } else {
+        rule
+    };
+    rule.clamp(0, 2) as usize
 }
 
 /// How a number reads in `unit`: `decimals` if given, otherwise the unit's
@@ -644,18 +660,30 @@ fn format_number(value: f64, unit: ParamUnit, decimals: Option<usize>) -> String
             let rule = if value.abs() < 0.995 { 2 } else { 1 };
             format!("{} dB", number(value, rule))
         }
-        ParamUnit::Hertz if value.abs() >= 1000.0 => {
-            let khz = value / 1000.0;
-            format!("{} kHz", number(khz, significant(khz)))
-        }
-        ParamUnit::Hertz => format!("{} Hz", number(value, significant(value))),
-        ParamUnit::Milliseconds if value.abs() >= 1000.0 => {
-            let s = value / 1000.0;
-            format!("{} s", number(s, significant(s)))
+        // The boundary is judged after rounding, as dB's and per cent's are:
+        // 999.6 Hz rounds to 1000 and reads in kHz.
+        ParamUnit::Hertz => {
+            let rule = significant(value);
+            if rounded_to(value, rule as i32).abs() >= 1000.0 {
+                let khz = value / 1000.0;
+                format!("{} kHz", number(khz, significant(khz)))
+            } else {
+                format!("{} Hz", number(value, rule))
+            }
         }
         // Observed: 0 ms.
         ParamUnit::Milliseconds if value == 0.0 => format!("{} ms", number(value, 0)),
-        ParamUnit::Milliseconds => format!("{} ms", number(value, significant(value))),
+        // The boundary is judged after rounding, as dB's and per cent's are:
+        // 999.7 ms rounds to 1000 and reads in seconds.
+        ParamUnit::Milliseconds => {
+            let rule = significant(value);
+            if rounded_to(value, rule as i32).abs() >= 1000.0 {
+                let s = value / 1000.0;
+                format!("{} s", number(s, significant(s)))
+            } else {
+                format!("{} ms", number(value, rule))
+            }
+        }
         ParamUnit::Seconds => format!("{} s", number(value, significant(value))),
         // Observed: 100 %, 21 %, 0.0 %.
         ParamUnit::Percent => {
@@ -841,6 +869,42 @@ mod tests {
             ParamDescriptor::integer(id(4), "Transpose", (-48, 48), 0, ParamUnit::Semitones);
         assert_eq!(semis.format(-12.0), "-12 st");
         assert_eq!(semis.parse("7 st"), Some(7.0));
+    }
+
+    // R5: a unit's boundary is judged after rounding, as dB's and per
+    // cent's are.
+    #[test]
+    fn a_value_that_rounds_up_across_a_boundary_keeps_three_figures() {
+        let hz = |v| {
+            ParamDescriptor::continuous(
+                id(1),
+                "Frequency",
+                (20.0, 20_000.0),
+                100.0,
+                ParamUnit::Hertz,
+            )
+            .format(v)
+        };
+        // 999.6 rounds to 1000, which reads in kHz; 99.96 reads "100", not
+        // "100.0". Below the boundary, the value stays.
+        assert_eq!(
+            [hz(999.6), hz(99.96), hz(999.4), hz(99.94)],
+            ["1.00 kHz", "100 Hz", "999 Hz", "99.9 Hz"]
+        );
+        let ms = |v| {
+            ParamDescriptor::continuous(id(5), "T", (0.0, 5_000.0), 0.0, ParamUnit::Milliseconds)
+                .format(v)
+        };
+        assert_eq!([ms(999.7), ms(999.3)], ["1.00 s", "999 ms"]);
+        let s = |v| {
+            ParamDescriptor::continuous(id(6), "Time", (0.0, 128.0), 0.0, ParamUnit::Seconds)
+                .format(v)
+        };
+        assert_eq!([s(9.996), s(99.96)], ["10.0 s", "100 s"]);
+        let ratio = |v| {
+            ParamDescriptor::continuous(id(7), "R", (1.0, 100.0), 4.0, ParamUnit::Ratio).format(v)
+        };
+        assert_eq!([ratio(9.996), ratio(9.994)], ["10.0 : 1", "9.99 : 1"]);
     }
 
     // Rule G2.
