@@ -13,7 +13,10 @@
 //!
 //! The harness calls `process` for every block, whatever status the plug-in
 //! returned last, so a render's length never depends on when a plug-in
-//! sleeps; [`Render::statuses`] records what it asked for.
+//! sleeps; [`Render::statuses`] records what it asked for. A test can also
+//! be a host with a transport: [`Instance::set_transport`] gives the
+//! plug-in one, as a host reports it at each block's first sample, and the
+//! harness moves its song position on by the frames it renders.
 //!
 //! [`block_invariance`] renders the same script at several block sizes
 //! ([`BLOCK_SIZES`]: 1, 32, 64 and 512 frames) and compares them.
@@ -385,6 +388,9 @@ pub struct Instance<P: Plugin> {
     values: Arc<ParamValues>,
     edits: Consumer<Edit>,
     requests: Rc<Recorder>,
+    /// The transport this host reports at each block's first sample, when
+    /// the test set one.
+    transport: Option<Transport>,
 }
 
 /// An active instance's processor and buffers.
@@ -394,9 +400,6 @@ struct Active<T> {
     buffers: Vec<Vec<f32>>,
     events: Vec<Event>,
     sink: Collect,
-    /// The transport this host reports at each block's first sample, when
-    /// the test set one.
-    transport: Option<Transport>,
 }
 
 impl<P: Plugin> Instance<P> {
@@ -418,6 +421,7 @@ impl<P: Plugin> Instance<P> {
             values,
             edits,
             requests,
+            transport: None,
         })
     }
 
@@ -512,7 +516,6 @@ impl<P: Plugin> Instance<P> {
             buffers: vec![vec![0.0; settings.block]; outputs],
             events: Vec::with_capacity(Host::edit_capacity(&self.values) + 64),
             sink: Collect::with_capacity(OUTPUT_CAPACITY),
-            transport: None,
         });
         Ok(())
     }
@@ -522,9 +525,7 @@ impl<P: Plugin> Instance<P> {
     /// renders, as a host does. `None` leaves a host with none, which a
     /// plug-in runs from its own clock. Plain values: nothing locks.
     pub fn set_transport(&mut self, transport: Option<Transport>) {
-        if let Some(active) = self.active.as_mut() {
-            active.transport = transport;
-        }
+        self.transport = transport;
     }
 
     /// Deactivates it, handing the processor back to the plug-in.
@@ -700,7 +701,7 @@ impl<P: Plugin> Instance<P> {
         let mut audio = Buffers::new(&mut slices);
         let processor = &mut active.processor;
         let sink = &mut active.sink;
-        let transport = active.transport.as_ref();
+        let transport = self.transport.as_ref();
         let values = &*self.values;
         let list = Events::from_slice(&active.events);
         let mut run = || {
@@ -724,7 +725,7 @@ impl<P: Plugin> Instance<P> {
         } else {
             lspk_rt::realtime(run)
         };
-        if let Some(transport) = active.transport.as_mut() {
+        if let Some(transport) = self.transport.as_mut() {
             transport.advance(frames, active.settings.sample_rate);
         }
         (status, duration)
