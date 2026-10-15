@@ -250,6 +250,9 @@ impl Preset {
                 set.push((descriptor.id, value));
             }
         }
+        // A space's descriptors are in the hosts' order, which needn't be
+        // their IDs' order; `values` is sorted by ID, as `value` reads it.
+        set.sort_unstable_by_key(|(id, _)| *id);
         Self { values: set, state }
     }
 
@@ -571,6 +574,30 @@ mod tests {
         // The text a patch writes loads back as that patch.
         let text = save("test-preset", &base, &state).expect("saved");
         assert_eq!(load(&text, "test-preset", &base).expect("loaded"), built);
+    }
+
+    #[test]
+    fn a_patch_is_the_preset_sorted_by_id() {
+        // A space whose descriptors aren't in their IDs' order — a host
+        // lists a parameter where it likes: `of` sorts, so `value` finds
+        // each.
+        let space = ParamSpace::builder()
+            .global(ParamDescriptor::choice(
+                MODE,
+                "Mode",
+                &["Clean", "Warm", "Hot"],
+                1,
+            ))
+            .global(ParamDescriptor::gain(GAIN, "Gain", 6.0, 0.0))
+            .build()
+            .expect("a space");
+        let values = ParamValues::with_space(space.descriptors(), Arc::new(space)).expect("values");
+        values.set(MODE, 2.0);
+        values.set(GAIN, 0.5);
+        let preset = Preset::of(&values, Value::Null);
+        assert_eq!(preset.values, vec![(GAIN, 0.5), (MODE, 2.0)]);
+        assert_eq!(preset.value(GAIN), Some(0.5));
+        assert_eq!(preset.value(MODE), Some(2.0));
     }
 
     #[test]
