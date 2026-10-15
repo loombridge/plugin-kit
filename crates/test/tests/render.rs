@@ -8,7 +8,7 @@ use std::hint::black_box;
 use lspk_params::{ParamDescriptor, ParamId, ParamUnit};
 use lspk_plugin::{
     AudioLayout, Buffers, Event, Events, Host, Note, NotePorts, OutputEvent, ParamValues, Plugin,
-    PluginError, PluginInfo, ProcessConfig, ProcessContext, ProcessStatus, Processor,
+    PluginError, PluginInfo, ProcessConfig, ProcessContext, ProcessStatus, Processor, Transport,
 };
 use lspk_test::render::{self, BLOCK_SIZES, Script, Settings, block_invariance};
 
@@ -241,4 +241,77 @@ fn an_effect_takes_its_input_and_settings_are_checked() {
     assert_eq!(render.output.sample_rate, 44_100.0);
     instance.deactivate();
     assert!(!instance.is_active());
+}
+
+/// An instrument that lays the transport it sees into its first channel:
+/// the tempo, then the song position in beats, each NaN when the host
+/// offers no transport.
+struct ClockProbe;
+
+impl Plugin for ClockProbe {
+    type Processor = ClockProbeProcessor;
+
+    const INFO: PluginInfo =
+        PluginInfo::new("com.loombridge.test.clock", "Clock").audio(AudioLayout::instrument(1));
+
+    fn new(_host: Host) -> Self {
+        Self
+    }
+
+    fn activate(
+        &mut self,
+        _config: &ProcessConfig,
+        _values: &ParamValues,
+    ) -> Result<ClockProbeProcessor, PluginError> {
+        Ok(ClockProbeProcessor)
+    }
+}
+
+struct ClockProbeProcessor;
+
+impl Processor for ClockProbeProcessor {
+    fn process(
+        &mut self,
+        audio: &mut Buffers<'_>,
+        _events: &Events<'_>,
+        cx: &mut ProcessContext<'_>,
+    ) -> ProcessStatus {
+        audio.silence();
+        let (tempo, beats) = match cx.transport() {
+            Some(transport) => (transport.tempo, transport.beats),
+            None => (f64::NAN, f64::NAN),
+        };
+        audio.channel_mut(0)[0] = tempo as f32;
+        audio.channel_mut(0)[1] = beats as f32;
+        ProcessStatus::Continue
+    }
+
+    fn flush(&mut self, _events: &Events<'_>, _cx: &mut ProcessContext<'_>) {}
+}
+
+#[test]
+fn the_harness_offers_the_transport_it_was_given() {
+    let mut instance = render::Instance::<ClockProbe>::new().expect("an instance");
+    instance.activate(Settings::new(RATE, 64)).expect("active");
+    // A host with no transport offers none.
+    let block = instance.process(64, &[], &[]);
+    assert!(block.outputs[0][0].is_nan(), "{:?}", block.outputs[0]);
+    // One that sets a transport offers it at every block's first sample,
+    // and moves the song position on between blocks.
+    instance.set_transport(Some(Transport {
+        tempo: 90.0,
+        playing: true,
+        beats: 8.5,
+        ..Transport::default()
+    }));
+    let block = instance.process(64, &[], &[]);
+    assert_eq!(block.outputs[0][0], 90.0);
+    assert_eq!(block.outputs[0][1], 8.5);
+    let block = instance.process(64, &[], &[]);
+    let beats = 8.5 + 64.0 / 48_000.0 * 90.0 / 60.0;
+    assert!(
+        (f64::from(block.outputs[0][1]) - beats).abs() < 1e-3,
+        "{} against {beats}",
+        block.outputs[0][1]
+    );
 }
