@@ -7,6 +7,8 @@
 //! | [`Table`] | The playable table, built off the audio thread: the morphed frames made at load, and every frame as band-limited mipmaps laid out for the cache. The audio thread only reads it |
 //! | [`Cache`] | The process-wide cache that shares one [`Table`] between every instance that loads it, never freed on the audio thread |
 //! | [`osc`] | The wavetable oscillator: every voice and unison copy in SIMD lanes, with frame position, Smooth frames, phase, random phase, the phase modes, audio-rate pitch and frame modulation, and mipmap levels that change without clicks |
+//! | [`sub`] | The sub oscillator: six fixed shapes, one per voice, with Octave, Sweep, Phase, Continue phase, Wrap phase and Key track |
+//! | [`noise`] | The noise oscillator: mono or stereo sample playback with Loop, Start, Start random, Rate, Fine and Key track, over its own generated White, Pink, Brown and Crackle colour blocks |
 //! | [`shaper`] | The oscillator's two shaper slots in series: sync, the pinches and leans, pulse width, flip, mirror, the remaps and their drawn curve, quantise, odd/even, the filters and fourteen distortions, band-limited and oversampled where they need it, with a preview of one shaped cycle |
 //!
 //! # Playing a table
@@ -35,16 +37,20 @@
 
 mod cache;
 mod model;
+pub mod noise;
 pub mod osc;
 pub mod shaper;
 mod spectrum;
+pub mod sub;
 mod table;
 pub mod wav;
 
 pub use cache::{Cache, SharedTable};
 pub use model::{Frame, Interpolation, Wavetable};
+pub use noise::{Colour, Noise, Samples};
 pub use osc::Oscillator;
 pub use spectrum::FrameKind;
+pub use sub::{Shape, Sub};
 pub use table::{CYCLE, GUARD, Level, MIN_LEVEL_SIZE, OVERSAMPLING, Table, Wave, increment};
 
 /// The samples in one frame (engine-core R13).

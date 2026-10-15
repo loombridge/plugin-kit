@@ -4,7 +4,7 @@ The plug-in kit is a set of Rust crates for building audio plug-ins: real-time s
 
 [Reagent](https://github.com/loombridge/reagent), a wavetable synthesiser, is the first plug-in built on it.
 
-The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands`, `lspk-agent`, `lspk-dsp` (oversampling, envelopes, LFOs, filters and the SIMD helpers so far), `lspk-voice`, `lspk-mod`, `lspk-wavetable` (the wavetable model, WAV files, mipmaps, the wavetable oscillator and its shapers), `lspk-plugin` (with its CLAP, VST3 and Audio Unit v2 exports and editor hosting), `lspk-plugin-agent` (the agent interface inside a running plug-in), `lspk-ui` (editors embedded in the host's window, and a generic interface for any plug-in's parameters), `lspk-clap-wrapper`, `lspk-standalone` and `lspk-test` (the headless test harness, with CLAP, VST3 and Audio Unit hosts, and the performance harness) hold working code, only `lspk-fx`, `lspk-presets` and `lspk-seq` are still stubs, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
+The plug-in kit is in early development: `lspk-rt`, `lspk-params`, `lspk-commands`, `lspk-agent`, `lspk-dsp` (oversampling, envelopes, LFOs, filters and the SIMD helpers so far), `lspk-voice`, `lspk-mod`, `lspk-wavetable` (the wavetable model, WAV files, mipmaps, the wavetable, sub and noise oscillators and the shapers), `lspk-plugin` (with its CLAP, VST3 and Audio Unit v2 exports and editor hosting), `lspk-plugin-agent` (the agent interface inside a running plug-in), `lspk-ui` (editors embedded in the host's window, and a generic interface for any plug-in's parameters), `lspk-clap-wrapper`, `lspk-standalone` and `lspk-test` (the headless test harness, with CLAP, VST3 and Audio Unit hosts, and the performance harness) hold working code, only `lspk-fx`, `lspk-presets` and `lspk-seq` are still stubs, and there's no stable API yet. Until there is, plug-ins depend on it by git revision; nothing is published to crates.io.
 
 ## Crates
 
@@ -20,7 +20,7 @@ Every crate carries the prefix `lspk-`.
 | `lspk-voice` | Voice allocation and stealing, mono, legato and glide, unison, MPE and per-note expression |
 | `lspk-mod` | The modulation engine: a 64-slot matrix of sources, destinations, curves and auxiliary sources, per-voice and global, sample-accurate, at audio rate only where a destination needs it; its edits as commands |
 | `lspk-fx` | The effects library, each effect usable inside a plug-in and as a plug-in of its own |
-| `lspk-wavetable` | The wavetable model, WAV import and export, mipmaps, the wavetable oscillator and its shapers, spectral operations, resynthesis |
+| `lspk-wavetable` | The wavetable model, WAV import and export, mipmaps, the wavetable, sub and noise oscillators and the shapers, spectral operations, resynthesis |
 | `lspk-seq` | Arpeggiator and step and clip sequencing, synced to the host's tempo |
 | `lspk-presets` | The preset format (documented, versioned JSON), the preset library, A/B compare, undo history |
 | `lspk-ui` | The egui widget set, theming, zoom, AccessKit, host-window embedding through baseview |

@@ -4,7 +4,7 @@
 //! the shapers a family at a time (including the inter-oscillator modes
 //! reading a source), and unison: 8 voices of 7 copies and 32 of 16,
 //! rendered and mixed to a stereo pair per voice, timed per voice-copy
-//! sample.
+//! sample, and the sub and noise oscillators.
 //! `cargo xtask bench` times them, and CI's instruction-count gate covers
 //! them (at the AVX2 level).
 
@@ -14,8 +14,12 @@ use std::process::ExitCode;
 use lspk_dsp::simd;
 use lspk_test::bench::Suite;
 use lspk_voice::{Unison, UnisonLanes};
+use lspk_wavetable::noise::{
+    COLOUR_RATE, COLOUR_SECONDS, Colour, Inputs as NoiseInputs, Noise, Samples,
+};
 use lspk_wavetable::osc::{Inputs, Layout, Onset, Oscillator};
 use lspk_wavetable::shaper::{Mode, ShapedOscillator, ShaperInputs};
+use lspk_wavetable::sub::{Inputs as SubInputs, Sub};
 use lspk_wavetable::{Cache, Interpolation, MAX_FRAMES, Table, Wavetable, increment, wav};
 
 /// Frames in a block, as hosts commonly use.
@@ -145,7 +149,61 @@ fn main() -> ExitCode {
         shaped(1, [Mode::Valve, Mode::Off], true, false)
     });
 
+    // The sub oscillator: 32 voices (one lane each) rendered across lanes.
+    suite.micro("sub/32-voices", BLOCK, sub);
+
+    // The noise oscillator: 32 voices of a generated colour block, both
+    // channels. The block's own generation is timed too, as a load-time
+    // cost.
+    suite.micro("noise/32-voices", BLOCK, noise);
+    suite.micro("noise/generate-colour", 1, || {
+        move || {
+            let block = Samples::colour(Colour::Pink, COLOUR_SECONDS, COLOUR_RATE, 1);
+            black_box(&block);
+        }
+    });
+
     suite.main()
+}
+
+/// A sub of 32 voices and a routine rendering a block of it.
+fn sub() -> impl FnMut() {
+    let mut sub = Sub::new(32, 48_000.0, BLOCK);
+    let pitch: Vec<f32> = (0..32).map(|v| 33.0 + v as f32).collect();
+    for (voice, &key) in pitch.iter().enumerate() {
+        sub.start(voice, key, Onset::Fresh);
+    }
+    let mut out = vec![0.0f32; BLOCK * sub.lane_count()];
+    move || {
+        let inputs = SubInputs {
+            lanes: 32,
+            pitch: &pitch,
+            ..SubInputs::default()
+        };
+        sub.process(BLOCK, &inputs, &mut out);
+        black_box(&out);
+    }
+}
+
+/// A noise player of 32 voices and a routine rendering a block of a
+/// generated colour block.
+fn noise() -> impl FnMut() {
+    let source = Samples::colour(Colour::White, COLOUR_SECONDS, COLOUR_RATE, 1);
+    let mut noise = Noise::new(32, 48_000.0, BLOCK, 1);
+    let pitch: Vec<f32> = (0..32).map(|v| 33.0 + v as f32).collect();
+    for voice in 0..32 {
+        noise.start(voice, Onset::Fresh);
+    }
+    let mut out = vec![0.0f32; BLOCK * 2 * noise.lane_count()];
+    move || {
+        let inputs = NoiseInputs {
+            lanes: 32,
+            pitch: &pitch,
+            ..NoiseInputs::default()
+        };
+        noise.process(BLOCK, &inputs, &source, &mut out);
+        black_box(&out);
+    }
 }
 
 /// A shaped oscillator of `voices` voices with slots in `modes` at 60 %, and
