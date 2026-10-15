@@ -196,7 +196,11 @@ fn shaped(voices: usize, modes: [Mode; 2], modulated: bool, sourced: bool) -> im
         };
         let mods = ShaperInputs {
             amount_mod: [modulated.then_some(&modulation[..]), None],
-            sources: [sourced.then_some(&signal[..]), None],
+            // Both slots read it: the pairs include FM then Ring.
+            sources: [
+                sourced.then_some(&signal[..]),
+                sourced.then_some(&signal[..]),
+            ],
         };
         osc.process(BLOCK, &inputs, &mods, &mut out);
         black_box(&out);
