@@ -55,7 +55,7 @@ impl Colour {
 pub const COLOUR_RATE: f64 = 48_000.0;
 
 /// How long a colour block is, in seconds.
-pub const COLOUR_SECONDS: f32 = 2.0;
+pub const COLOUR_SECONDS: f32 = 1.0;
 
 /// The RMS every colour block is scaled to.
 const COLOUR_RMS: f64 = 0.25;
@@ -262,22 +262,24 @@ fn crackle(out: &mut [f32], rate: f64, state: &mut u64) {
 
 /// Removes the mean and scales `data` to [`COLOUR_RMS`].
 fn normalise(data: &mut [f32]) {
-    let mean = data.iter().map(|&x| f64::from(x)).sum::<f64>() / data.len() as f64;
+    // One pass to measure the mean and the power, one to remove and scale.
+    let mut sum = 0.0f64;
+    let mut squares = 0.0f64;
+    for &x in data.iter() {
+        sum += f64::from(x);
+        squares += f64::from(x) * f64::from(x);
+    }
+    let n = data.len() as f64;
+    let mean = sum / n;
+    let variance = (squares / n - mean * mean).max(0.0);
+    let gain = if variance > 0.0 {
+        (COLOUR_RMS / variance.sqrt()) as f32
+    } else {
+        0.0
+    };
     let mean = mean as f32;
     for sample in data.iter_mut() {
-        *sample -= mean;
-    }
-    let rms = (data
-        .iter()
-        .map(|&x| f64::from(x) * f64::from(x))
-        .sum::<f64>()
-        / data.len() as f64)
-        .sqrt();
-    if rms > 0.0 {
-        let gain = (COLOUR_RMS / rms) as f32;
-        for sample in data.iter_mut() {
-            *sample *= gain;
-        }
+        *sample = (*sample - mean) * gain;
     }
 }
 
