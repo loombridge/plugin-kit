@@ -4,7 +4,7 @@
 //!
 //! | Item | What it is |
 //! |---|---|
-//! | [`Colour`] | The four colours Reagent generates itself: White, Pink (−3 dB per octave), Brown (−6 dB per octave) and Crackle, a Geiger-like stream of random clicks (R49) |
+//! | [`Colour`] | The four colours Reagent generates itself: White, Pink (−3 dB per octave), Brown (−6 dB per octave) and Crackle, a sparse stream of random clicks (R49) |
 //! | [`Samples`] | The block a render reads: mono or stereo, interleaved, at its own rate; a colour's block is generated from a seed |
 //! | [`Params`] | The player's controls, shared by every voice: Loop, Start, Start random, Rate, Fine, Key track, Stereo, Tone and Level |
 //! | [`Inputs`] | What a render reads per voice: pitch, its glide step, and Start modulation (R47) |
@@ -41,7 +41,7 @@ pub enum Colour {
     Pink,
     /// −6 dB per octave.
     Brown,
-    /// Random clicks, like a Geiger counter.
+    /// Sparse random clicks.
     Crackle,
 }
 
@@ -477,9 +477,10 @@ impl Noise {
     }
 
     /// Voice `voice` starts reading, as the voice manager reports `onset`:
-    /// a fresh, stolen, retriggered or joining note takes its start
+    /// a fresh note and a note joining a held one take their start
     /// position (R47), with Start random's random offset drawn per voice; a
-    /// legato note carries on.
+    /// stolen, retriggered or legato note carries on, as the oscillators'
+    /// and the sub's phases do (R18).
     ///
     /// # Panics
     ///
