@@ -265,7 +265,7 @@ fn render_parts(
     let split = at.unwrap_or(block.frames);
     lfo.render_with(block, voice, 0, split, &mut emit);
     if let Some(at) = at {
-        lfo.trigger(block, voice, at);
+        lfo.trigger(block, voice);
         lfo.render_with(block, voice, at, block.frames - at, |i, x, y| {
             emit(at + i, x, y);
         });
@@ -321,7 +321,7 @@ impl Kernel for Run<'_> {
             let mut plain = true;
             for (v, voice) in voices.iter_mut().enumerate() {
                 if pending[v] == Some(k) {
-                    lfo.trigger(block, voice, k);
+                    lfo.trigger(block, voice);
                     lfo.begin(block, voice, k);
                     if chaos && lfo.settings.mode != Mode::Free {
                         for i in 0..3 {
@@ -416,7 +416,7 @@ impl Kernel for Run<'_> {
             }
             // A note-on at the block's end starts the voice for the next.
             if pending[v].is_some_and(|at| at >= block.frames) {
-                lfo.trigger(block, voice, block.frames);
+                lfo.trigger(block, voice);
             }
         }
         pending.fill(None);

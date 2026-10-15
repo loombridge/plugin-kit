@@ -518,7 +518,7 @@ impl<P: Plugin> Standalone<P> {
                 edits,
                 midi,
                 (layout.inputs, layout.outputs),
-                info.max_frames,
+                config,
                 meter.clone(),
             );
             let slot = Slot::new(engine);

@@ -41,11 +41,13 @@ use clack_extensions::track_info::{
 };
 use clack_host::entry::EntryDescriptor;
 use clack_host::events::event_types::{
-    MidiEvent, NoteChokeEvent, NoteOffEvent, NoteOnEvent, ParamValueEvent,
+    MidiEvent, NoteChokeEvent, NoteOffEvent, NoteOnEvent, ParamValueEvent, TransportEvent,
+    TransportFlags,
 };
 use clack_host::events::spaces::CoreEventSpace;
-use clack_host::events::{Match, Pckn};
+use clack_host::events::{EventFlags, Match, Pckn};
 use clack_host::prelude::*;
+use clack_host::utils::{BeatTime, SecondsTime};
 use lspk_params::ParamDescriptor;
 use lspk_plugin::Event;
 use lspk_plugin::agent_commands::PluginAgentCommands;
@@ -224,6 +226,44 @@ pub struct ClapTestHost {
     steady: u64,
     sample_rate: f64,
     max_frames: usize,
+    /// The transport this host offers the plug-in, when the test set one.
+    transport: Option<TransportEvent>,
+}
+
+/// A CLAP transport event for a test host: `tempo` beats per minute, the
+/// song position in `beats` and `seconds`, playing or stopped, in 4/4.
+#[must_use]
+pub fn transport_event(tempo: f64, beats: f64, seconds: f64, playing: bool) -> TransportEvent {
+    let mut flags = TransportFlags::HAS_TEMPO
+        | TransportFlags::HAS_BEATS_TIMELINE
+        | TransportFlags::HAS_SECONDS_TIMELINE
+        | TransportFlags::HAS_TIME_SIGNATURE;
+    flags.set(TransportFlags::IS_PLAYING, playing);
+    TransportEvent {
+        header: EventHeader::new_core(0, EventFlags::empty()),
+        flags,
+        song_pos_beats: BeatTime::from_float(beats),
+        song_pos_seconds: SecondsTime::from_float(seconds),
+        tempo,
+        tempo_inc: 0.0,
+        loop_start_beats: BeatTime::from_float(0.0),
+        loop_end_beats: BeatTime::from_float(0.0),
+        loop_start_seconds: SecondsTime::from_float(0.0),
+        loop_end_seconds: SecondsTime::from_float(0.0),
+        bar_start: BeatTime::from_float(0.0),
+        bar_number: 0,
+        time_signature_numerator: 4,
+        time_signature_denominator: 4,
+    }
+}
+
+/// Moves a transport event's song position on by `frames` samples, as a
+/// host does between blocks.
+fn advance_transport(event: &mut TransportEvent, frames: usize, sample_rate: f64) {
+    let seconds = frames as f64 / sample_rate.max(1.0);
+    event.song_pos_seconds = SecondsTime::from_float(event.song_pos_seconds.to_float() + seconds);
+    event.song_pos_beats =
+        BeatTime::from_float(event.song_pos_beats.to_float() + seconds * event.tempo / 60.0);
 }
 
 /// How many events a block may carry each way.
@@ -290,7 +330,16 @@ impl ClapTestHost {
             steady: 0,
             sample_rate: 0.0,
             max_frames: 0,
+            transport: None,
         })
+    }
+
+    /// Sets the transport this host offers the plug-in from the next block
+    /// on, at the block's first sample (such as [`transport_event`]'s); the
+    /// host moves its song position on by the frames it runs, as a host
+    /// does. `None` (the default) offers none, as a free-running host.
+    pub fn set_transport(&mut self, transport: Option<TransportEvent>) {
+        self.transport = transport;
     }
 
     /// Every parameter, in the plug-in's order.
@@ -717,6 +766,7 @@ impl ClapTestHost {
         let in_events = InputEvents::from_buffer(&self.in_events);
         let mut out_events = OutputEvents::from_buffer(&mut self.out_events);
         let steady = self.steady;
+        let transport = self.transport;
         let mut run = || {
             let start = std::time::Instant::now();
             let result = processor.process(
@@ -725,7 +775,7 @@ impl ClapTestHost {
                 &in_events,
                 &mut out_events,
                 Some(steady),
-                None,
+                transport.as_ref(),
             );
             (result, start.elapsed())
         };
@@ -738,6 +788,9 @@ impl ClapTestHost {
         };
         let status = result.expect("processing succeeds");
         self.steady += frames as u64;
+        if let Some(transport) = self.transport.as_mut() {
+            advance_transport(transport, frames, self.sample_rate);
+        }
         (status, duration)
     }
 

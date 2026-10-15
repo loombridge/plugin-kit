@@ -317,8 +317,8 @@ impl Scale {
 
 /// An LFO slot's settings, with the init patch's values by default: a
 /// drawn triangle, restarted by notes, per voice, forward, synced at a
-/// quarter note, song lock on, no fade in, delay or smoothing, phase 0 and
-/// an 8 by 8 grid.
+/// quarter note, song lock off (its interface default isn't observed yet),
+/// no fade in, delay or smoothing, phase 0 and an 8 by 8 grid.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Settings {
     /// What it generates.
@@ -331,9 +331,11 @@ pub struct Settings {
     pub direction: Direction,
     /// Its rate.
     pub rate: Rate,
-    /// Song lock (the host anchor): with a synced rate, its phase follows
-    /// the host's song position; in Free mode with a rate in hertz, its
-    /// phase is computed from the transport (engine-core R84).
+    /// Song lock (the host anchor): while the host plays, the LFO's phase
+    /// is a function of its song position, whatever the mode, so two runs
+    /// at the same position play the same phases; its rate may be synced or
+    /// in hertz. Without it a restarted LFO runs from its own note, and a
+    /// free one from its own clock (engine-core R84).
     pub song_lock: bool,
     /// Swing, on a synced rate, by the transport's swing amount
     /// (engine-core R87).
@@ -362,7 +364,9 @@ impl Default for Settings {
             shared: false,
             direction: Direction::Forward,
             rate: Rate::default(),
-            song_lock: true,
+            // The interface's own default isn't observed yet; off until it
+            // is (engine-core R84).
+            song_lock: false,
             swing: false,
             fade_in: Span::Off,
             delay: Span::Off,
@@ -436,6 +440,17 @@ enum FreeClock {
     },
 }
 
+/// Where a locked LFO reads its phase from: the host's transport, so two
+/// runs at the same song position play the same phases (engine-core R84).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SongLock {
+    /// Cycles per beat, from a synced rate.
+    Beats(f64),
+    /// Cycles per second, from a rate in hertz and the transport's own
+    /// seconds.
+    Seconds(f64),
+}
+
 /// One block's rate, clock and smoothing for an LFO slot, from
 /// [`Lfo::prepare`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -445,8 +460,9 @@ pub struct Block {
     inc: f64,
     /// Phase, in cycles.
     phase: f64,
-    /// Cycles per beat when a restarted LFO follows the song position.
-    restart_lock: Option<f64>,
+    /// How a locked LFO — Song lock, with a playing host — follows the
+    /// transport, whatever its mode.
+    song_lock: Option<SongLock>,
     free: FreeClock,
     beats: f64,
     beats_per_sample: f64,
@@ -478,6 +494,10 @@ impl Block {
     fn beats_at(&self, k: usize) -> f64 {
         self.beats + k as f64 * self.beats_per_sample
     }
+
+    fn seconds_at(&self, k: usize) -> f64 {
+        self.seconds + k as f64 / self.sample_rate
+    }
 }
 
 /// How a voice's position advances.
@@ -487,6 +507,8 @@ enum Anchor {
     Samples { c0: f64, n: u64, inc: f64 },
     /// cycles = c0 + (beats − b0) × per_beat.
     Beats { c0: f64, b0: f64, per_beat: f64 },
+    /// cycles = c0 + (seconds − s0) × per_second.
+    Seconds { c0: f64, s0: f64, per_second: f64 },
 }
 
 impl Anchor {
@@ -494,6 +516,27 @@ impl Anchor {
         match *self {
             Self::Samples { c0, n, inc } => c0 + n as f64 * inc,
             Self::Beats { c0, b0, per_beat } => c0 + (block.beats_at(k) - b0) * per_beat,
+            Self::Seconds { c0, s0, per_second } => c0 + (block.seconds_at(k) - s0) * per_second,
+        }
+    }
+
+    /// A locked LFO's anchor from a synced rate: Phase where the song
+    /// starts, so its phase is a function of the song position and not of
+    /// when a note came (engine-core R84).
+    fn locked_beats(phase: f64, per_beat: f64) -> Self {
+        Self::Beats {
+            c0: phase,
+            b0: 0.0,
+            per_beat,
+        }
+    }
+
+    /// The same, from a rate in hertz and the transport's seconds.
+    fn locked_seconds(phase: f64, per_second: f64) -> Self {
+        Self::Seconds {
+            c0: phase,
+            s0: 0.0,
+            per_second,
         }
     }
 }
@@ -713,10 +756,17 @@ impl Lfo {
         }
 
         let locked = s.song_lock && transport.playing;
-        let free = match (locked, per_beat, hz) {
-            (true, Some(p), _) => FreeClock::Beats(p),
-            (true, None, Some(h)) => FreeClock::Seconds(h),
-            _ => {
+        // A locked LFO is a function of the transport's position: its mode
+        // only decides what restarts (Delay, Fade in) at a note.
+        let song_lock = match (locked, per_beat, hz) {
+            (true, Some(p), _) => Some(SongLock::Beats(p)),
+            (true, None, Some(h)) => Some(SongLock::Seconds(h)),
+            _ => None,
+        };
+        let free = match song_lock {
+            Some(SongLock::Beats(p)) => FreeClock::Beats(p),
+            Some(SongLock::Seconds(h)) => FreeClock::Seconds(h),
+            None => {
                 if self.clock_locked || inc != self.clock_inc {
                     self.clock_c0 = self.clock_next;
                     self.clock_n = 0;
@@ -761,7 +811,7 @@ impl Lfo {
             frames,
             inc,
             phase,
-            restart_lock: per_beat.filter(|_| locked),
+            song_lock,
             free,
             beats: transport.beats,
             beats_per_sample,
@@ -775,18 +825,18 @@ impl Lfo {
         }
     }
 
-    /// Starts `voice` at a note-on just before sample `at` of `block`: it
-    /// restarts from Phase (unless the mode is Free), and its Delay and Fade
-    /// in start (engine-core R83, R88).
-    pub fn trigger(&self, block: &Block, voice: &mut LfoVoice, at: usize) {
+    /// Starts `voice` for a note-on in `block`: it restarts from Phase
+    /// (unless the mode is Free, or Song lock grounds it in the transport,
+    /// where its phase comes from the song position and not from the note),
+    /// and its Delay and Fade in start (engine-core R83, R84, R88).
+    pub fn trigger(&self, block: &Block, voice: &mut LfoVoice) {
         let s = &self.settings;
         if s.mode != Mode::Free {
-            voice.anchor = match block.restart_lock {
-                Some(per_beat) => Anchor::Beats {
-                    c0: block.phase,
-                    b0: block.beats_at(at),
-                    per_beat,
-                },
+            voice.anchor = match block.song_lock {
+                Some(SongLock::Beats(per_beat)) => Anchor::locked_beats(block.phase, per_beat),
+                Some(SongLock::Seconds(per_second)) => {
+                    Anchor::locked_seconds(block.phase, per_second)
+                }
                 None => Anchor::Samples {
                     c0: block.phase,
                     n: 0,
@@ -879,14 +929,24 @@ impl Lfo {
         if self.settings.mode == Mode::Free {
             return;
         }
-        let wanted = match block.restart_lock {
-            Some(per_beat) => match voice.anchor {
-                Anchor::Beats { per_beat: p, .. } if p == per_beat => None,
-                _ => Some(Anchor::Beats {
-                    c0: voice.anchor.at(block, from),
-                    b0: block.beats_at(from),
-                    per_beat,
-                }),
+        let wanted = match block.song_lock {
+            Some(SongLock::Beats(per_beat)) => match voice.anchor {
+                Anchor::Beats {
+                    c0,
+                    b0: 0.0,
+                    per_beat: p,
+                } if p == per_beat && c0 == block.phase => None,
+                // Grounded again: a rate or Phase change jumps the phase to
+                // the position the song has reached (engine-core R84).
+                _ => Some(Anchor::locked_beats(block.phase, per_beat)),
+            },
+            Some(SongLock::Seconds(per_second)) => match voice.anchor {
+                Anchor::Seconds {
+                    c0,
+                    s0: 0.0,
+                    per_second: p,
+                } if p == per_second && c0 == block.phase => None,
+                _ => Some(Anchor::locked_seconds(block.phase, per_second)),
             },
             None => match voice.anchor {
                 Anchor::Samples { inc, .. } if inc == block.inc => None,

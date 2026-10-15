@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use lspk_plugin::host::Edit;
 use lspk_plugin::{
     Buffers, Event, EventSink, Events, Host, HostBackend, Note, OutputEvent, ParamId, ParamValues,
-    Plugin, ProcessConfig, ProcessContext, ProcessStatus, Processor,
+    Plugin, ProcessConfig, ProcessContext, ProcessStatus, Processor, Transport,
 };
 use rtrb::Consumer;
 
@@ -394,6 +394,9 @@ struct Active<T> {
     buffers: Vec<Vec<f32>>,
     events: Vec<Event>,
     sink: Collect,
+    /// The transport this host reports at each block's first sample, when
+    /// the test set one.
+    transport: Option<Transport>,
 }
 
 impl<P: Plugin> Instance<P> {
@@ -509,8 +512,19 @@ impl<P: Plugin> Instance<P> {
             buffers: vec![vec![0.0; settings.block]; outputs],
             events: Vec::with_capacity(Host::edit_capacity(&self.values) + 64),
             sink: Collect::with_capacity(OUTPUT_CAPACITY),
+            transport: None,
         });
         Ok(())
+    }
+
+    /// Sets the transport this host reports, at each block's first sample,
+    /// from the next block on; the harness moves it on by the frames it
+    /// renders, as a host does. `None` leaves a host with none, which a
+    /// plug-in runs from its own clock. Plain values: nothing locks.
+    pub fn set_transport(&mut self, transport: Option<Transport>) {
+        if let Some(active) = self.active.as_mut() {
+            active.transport = transport;
+        }
     }
 
     /// Deactivates it, handing the processor back to the plug-in.
@@ -686,10 +700,11 @@ impl<P: Plugin> Instance<P> {
         let mut audio = Buffers::new(&mut slices);
         let processor = &mut active.processor;
         let sink = &mut active.sink;
+        let transport = active.transport.as_ref();
         let values = &*self.values;
         let list = Events::from_slice(&active.events);
         let mut run = || {
-            let mut cx = ProcessContext::new(values, sink);
+            let mut cx = ProcessContext::with_transport(values, sink, transport);
             let start = Instant::now();
             let status = if crate::bench::counting_process() {
                 // Only `process` itself counts towards a benchmark's
@@ -704,11 +719,15 @@ impl<P: Plugin> Instance<P> {
             };
             (status, start.elapsed())
         };
-        if lspk_rt::trap::is_installed() {
+        let (status, duration) = if lspk_rt::trap::is_installed() {
             lspk_rt::rt_test!(run())
         } else {
             lspk_rt::realtime(run)
+        };
+        if let Some(transport) = active.transport.as_mut() {
+            transport.advance(frames, active.settings.sample_rate);
         }
+        (status, duration)
     }
 }
 

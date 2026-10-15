@@ -55,7 +55,7 @@ fn processing_lfos_never_allocates() {
                     lone.settings.mode = mode;
                     let block = lone.prepare(&transport, FRAMES);
                     lone.render(&block, &mut voice, 0, &mut solo[..100], None);
-                    lone.trigger(&block, &mut voice, 100);
+                    lone.trigger(&block, &mut voice);
                     lone.render(&block, &mut voice, 100, &mut solo[100..], None);
                     transport.advance(FRAMES);
                 }

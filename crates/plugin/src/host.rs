@@ -1,5 +1,6 @@
 //! How a plug-in reaches its host: [`Host`] on the main thread, and
-//! [`ProcessContext`] on the audio thread.
+//! [`ProcessContext`] — which carries the host's [`Transport`] — on the
+//! audio thread.
 
 use std::cell::{OnceCell, RefCell};
 use std::fmt;
@@ -500,17 +501,94 @@ impl EventSink for () {
     }
 }
 
-/// What a processor can reach during a block: the parameters' values, and
-/// the host, for the processor's own parameter changes and finished notes.
+/// The host's transport at the first sample of a block: what a synced LFO,
+/// a tempo-synced envelope or a song-locked phase follows.
+///
+/// Each format maps its own transport into it (CLAP's transport event;
+/// VST3's process context and the Audio Unit's host callbacks through
+/// clap-wrapper) and gives it to the processor's [`ProcessContext`]. A
+/// format that doesn't offer a field leaves its default; a host that offers
+/// no transport at all passes `None`, and the plug-in follows a clock of
+/// its own, as the standalone app does with its device's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Transport {
+    /// Beats (quarter notes) per minute.
+    pub tempo: f64,
+    /// Beats in a bar, from the host's time signature.
+    pub beats_per_bar: f64,
+    /// Whether the host is playing: a song-locked phase follows only a
+    /// playing host.
+    pub playing: bool,
+    /// The song position in beats (quarter notes).
+    pub beats: f64,
+    /// The song position in seconds.
+    pub seconds: f64,
+}
+
+impl Default for Transport {
+    /// A stopped transport at the start of a song: 120 beats per minute in
+    /// 4/4.
+    fn default() -> Self {
+        Self {
+            tempo: 120.0,
+            beats_per_bar: 4.0,
+            playing: false,
+            beats: 0.0,
+            seconds: 0.0,
+        }
+    }
+}
+
+impl Transport {
+    /// Moves the song position on by `frames` samples at `sample_rate`, as
+    /// a host does between blocks.
+    pub fn advance(&mut self, frames: usize, sample_rate: f64) {
+        let seconds = frames as f64 / sample_rate.max(1.0);
+        self.seconds += seconds;
+        self.beats += seconds * self.tempo.max(0.0) / 60.0;
+    }
+}
+
+/// What a processor can reach during a block: the parameters' values, the
+/// host's transport, and the host itself, for the processor's own parameter
+/// changes and finished notes.
 pub struct ProcessContext<'a> {
     values: &'a ParamValues,
     sink: &'a mut dyn EventSink,
+    transport: Option<&'a Transport>,
 }
 
 impl<'a> ProcessContext<'a> {
-    /// A context over `values`, sending to `sink`. For adapters.
+    /// A context over `values`, sending to `sink`, with no transport. For
+    /// adapters; a host with one uses [`with_transport`](Self::with_transport).
     pub fn new(values: &'a ParamValues, sink: &'a mut dyn EventSink) -> Self {
-        Self { values, sink }
+        Self {
+            values,
+            sink,
+            transport: None,
+        }
+    }
+
+    /// A context that also reports `transport`, the host's at the block's
+    /// first sample, or `None` for a host that offers none. For adapters.
+    pub fn with_transport(
+        values: &'a ParamValues,
+        sink: &'a mut dyn EventSink,
+        transport: Option<&'a Transport>,
+    ) -> Self {
+        Self {
+            values,
+            sink,
+            transport,
+        }
+    }
+
+    /// The host's transport at this block's first sample, or `None` when
+    /// the host offers none. It's a plain value read on the audio thread:
+    /// nothing locks to reach it.
+    #[must_use]
+    pub fn transport(&self) -> Option<&Transport> {
+        self.transport
     }
 
     /// The parameters' values now.
@@ -743,6 +821,27 @@ mod tests {
         assert_eq!(values.get(slot.reserved_id(0)), Some(0.75));
         assert_eq!(calls.changed.get(), 3);
         assert!(values.view(slot.reserved_id(0)).is_some_and(|v| !v.hidden));
+    }
+
+    #[test]
+    fn a_context_carries_the_hosts_transport() {
+        let values = ParamValues::new(Vec::new()).expect("no parameters");
+        let mut sink = Collect(Vec::new());
+        let cx = ProcessContext::new(&values, &mut sink);
+        assert_eq!(cx.transport(), None);
+        let mut transport = Transport {
+            tempo: 90.0,
+            beats_per_bar: 3.0,
+            playing: true,
+            beats: 8.5,
+            seconds: 5.5,
+        };
+        let cx = ProcessContext::with_transport(&values, &mut sink, Some(&transport));
+        assert_eq!(cx.transport(), Some(&transport));
+        // A host moves the song position on between blocks.
+        transport.advance(24_000, 48_000.0);
+        assert_eq!(transport.seconds, 6.0);
+        assert_eq!(transport.beats, 9.25);
     }
 
     struct Collect(Vec<OutputEvent>);
