@@ -1,6 +1,6 @@
 # plugin-kit
 
-The plug-in kit is a set of Rust crates for building audio plug-ins: real-time safety, parameters, commands and the agent interface, DSP building blocks, voices, modulation, effects, wavetables, sequencing, presets, UI widgets, the plug-in formats and a headless test harness. A plug-in is written once against one `Plugin` trait and ships as CLAP natively, as VST3 and Audio Unit made from the CLAP build, as a standalone app and as a native [Beatlayer](https://github.com/loombridge/beatlayer) device. Every action a person can take in a plug-in built on the kit, an agent can take too.
+The plug-in kit is a set of Rust crates for building audio plug-ins: real-time safety, parameters, commands and the agent interface, DSP building blocks, voices, modulation, effects, wavetables, sequencing, presets, UI widgets, the plug-in formats and a headless test harness. A plug-in is written once against one `Plugin` trait and ships as CLAP natively, as VST3 and Audio Unit made from the CLAP build, as a standalone app and as a native [Beatlayer](https://github.com/loombridge/beatlayer) device. Every action a person can take in a plug-in built on the kit, an agent can take too, apart from the agent server's own settings, which stay with the person.
 
 [Reagent](https://github.com/loombridge/reagent), a wavetable synthesiser, is the first plug-in built on it.
 
