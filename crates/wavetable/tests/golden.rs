@@ -8,11 +8,15 @@ use std::f64::consts::TAU;
 use lspk_test::golden::Suite;
 use lspk_test::render::Output;
 use lspk_wavetable::osc::{Inputs, Layout, Onset, Oscillator};
-use lspk_wavetable::shaper::{Mode, ShapedOscillator, ShaperInputs};
+use lspk_wavetable::shaper::{Mode, ShapedOscillator, ShaperInputs, Source};
 use lspk_wavetable::{Cache, FRAME_SIZE, Wavetable};
 
 /// Frames per render.
 const FRAMES: usize = 1_024;
+
+/// The frequency of the signal an inter-oscillator mode reads: a fifth
+/// above the carrier, an octave and a half above middle A.
+const SOURCE_HZ: f64 = 330.0;
 
 /// A saw of 1,024 harmonics, in sine phase.
 fn saw() -> Vec<f32> {
@@ -56,14 +60,28 @@ fn every_mode_at_0_50_and_100() {
                 let pitch = vec![57.0; n];
                 let mut out = vec![0.0; 512 * n];
                 let mut audio = Vec::with_capacity(FRAMES);
+                // The inter-oscillator modes read a signal: the same sine
+                // for every one of them, from the render's first frame.
+                let reads = matches!(mode.source(), Some(source) if source != Source::Own);
+                let mut signal = vec![0.0; 512 * n];
                 while audio.len() < FRAMES {
+                    if reads {
+                        for (i, value) in signal.iter_mut().enumerate() {
+                            *value = (TAU * SOURCE_HZ * (audio.len() + i / n) as f64 / 48_000.0)
+                                .sin() as f32;
+                        }
+                    }
                     let inputs = Inputs {
                         lanes: 1,
                         pitch: &pitch,
                         ..Inputs::default()
                     };
+                    let shaper_inputs = ShaperInputs {
+                        amount_mod: [None, None],
+                        sources: [reads.then_some(&signal[..]), None],
+                    };
                     // The scalar path: the same arithmetic on every platform.
-                    osc.process_scalar(512, &inputs, &ShaperInputs::default(), &mut out);
+                    osc.process_scalar(512, &inputs, &shaper_inputs, &mut out);
                     audio.extend(out.iter().step_by(n));
                 }
                 audio

@@ -7,7 +7,7 @@ You're connected to one running instance of {name}, a plug-in built on Loombridg
 | Tool | Use it to |
 |---|---|
 | `query` | Read the plug-in now: what it is, the host and track it's on, a summary in prose, and every parameter with its range, default and value. Start here. |
-| `list_commands` | See the commands by area (`params`, and any of the plug-in's own), or search them by words. |
+| `list_commands` | See the commands by area (`params`, `agent`, and any of the plug-in's own), or search them by words. |
 | `describe_command` | Read a command's description and argument schema before running it for the first time. |
 | `run` | Run one command, or several as one step. Set `dry_run` to check without changing anything. |
 | `checkpoint` | Save the plug-in's state under a name, try something, and restore it if you don't like the result. |
@@ -15,7 +15,7 @@ You're connected to one running instance of {name}, a plug-in built on Loombridg
 
 ## Parameters
 
-Every parameter has an ID that never changes, a name, a kind and a range. Values are in each parameter's own units: a gain is a linear factor (1 is 0 dB, 0 is silence), a toggle is 0 or 1, a choice is its index from 0, and continuous parameters are in their unit (hertz, milliseconds, per cent). Each value also has the text the host shows, such as `-6.00 dB`.
+Every parameter has an ID that never changes, a name, a kind and a range. Values are in each parameter's own units: a gain is a linear factor (1 is 0 dB, 0 is silence), a toggle is 0 or 1, a choice is its index from 0, and continuous parameters are in their unit (hertz, milliseconds, per cent). Each value also has the text the host shows, such as `-6.0 dB`.
 
 To change parameters, run `params.set`:
 

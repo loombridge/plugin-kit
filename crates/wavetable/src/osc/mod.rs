@@ -313,13 +313,16 @@ pub trait PhaseStage {
     }
 
     /// How many times faster than its running phase lane `lane` reads the
-    /// table at most over frames `frames` of this render: the stage's
-    /// steepest slope. The lane picks its mipmap level for its increment
-    /// times this, so a stage that reads faster than the note still reads
-    /// a level whose harmonics stay below Nyquist. By default 1.
+    /// table at most over frames `frames` of this render, whose phase
+    /// `increment` per frame is `increment`: the stage's steepest slope.
+    /// The lane picks its mipmap level for `increment` times this, so a
+    /// stage that reads faster than the note still reads a level whose
+    /// harmonics stay below Nyquist. A stage that reads a source at audio
+    /// rate may add to the increment, in the same words a frame; by
+    /// default the increment is ignored and the slope is 1.
     #[inline(always)]
-    fn stretch(&mut self, lane: usize, frames: std::ops::Range<usize>) -> f32 {
-        let _ = (lane, frames);
+    fn stretch(&mut self, lane: usize, frames: std::ops::Range<usize>, increment: u32) -> f32 {
+        let _ = (lane, frames, increment);
         1.0
     }
 }
