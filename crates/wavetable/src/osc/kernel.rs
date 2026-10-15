@@ -201,7 +201,7 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
         for (i, (&peak, &own)) in peaks.iter().zip(&owns).enumerate().take(S::LANES) {
             // A stage that reads faster than the note picks the level for
             // the speed it reads at.
-            let stretch = self.phase_stage.stretch(c + i, looked.clone());
+            let stretch = self.phase_stage.stretch(c + i, looked.clone(), own);
             let lane = self.lanes.level_state(c + i);
             levels.advance(lane, stretched(own, stretch), stretched(peak, stretch));
             let (from, level) = (self.lanes.from[c + i], self.lanes.level[c + i]);

@@ -1,8 +1,10 @@
 //! Micro-benchmarks for `lspk-wavetable`: loading a table (the WAV read,
-//! the morphed frames and the mipmaps), reading one per sample, and the
+//! the morphed frames and the mipmaps), reading one per sample, the
 //! oscillator rendering one voice and 32, scalar and across lanes in SIMD,
-//! and unison: 8 voices of 7 copies and 32 of 16, rendered and mixed to a
-//! stereo pair per voice, timed per voice-copy sample.
+//! the shapers a family at a time (including the inter-oscillator modes
+//! reading a source), and unison: 8 voices of 7 copies and 32 of 16,
+//! rendered and mixed to a stereo pair per voice, timed per voice-copy
+//! sample.
 //! `cargo xtask bench` times them, and CI's instruction-count gate covers
 //! them (at the AVX2 level).
 
@@ -107,26 +109,40 @@ fn main() -> ExitCode {
     // The shapers, a family at a time: 32 voices across lanes, a block per
     // call, slot 1 in the family's mode at 60 % (and the two-slot case with
     // slot 2 too). Off measures what the shapers cost when they do nothing.
-    for (name, modes) in [
-        ("shaper/off", [Mode::Off, Mode::Off]),
-        ("shaper/smooth-pinch", [Mode::Pinch, Mode::Off]),
-        ("shaper/sync", [Mode::Sync, Mode::Off]),
-        ("shaper/edges-pulse-width", [Mode::PulseWidth, Mode::Off]),
-        ("shaper/quantise", [Mode::Quantise, Mode::Off]),
-        ("shaper/remap-drawn", [Mode::RemapDrawn, Mode::Off]),
-        ("shaper/odd-even", [Mode::OddEven, Mode::Off]),
-        ("shaper/filter-low-pass", [Mode::LowPass, Mode::Off]),
-        ("shaper/distortion-valve", [Mode::Valve, Mode::Off]),
-        ("shaper/distortion-hard-clip", [Mode::HardClip, Mode::Off]),
-        ("shaper/sync-then-valve", [Mode::Sync, Mode::Valve]),
+    for (name, modes, sourced) in [
+        ("shaper/off", [Mode::Off, Mode::Off], false),
+        ("shaper/smooth-pinch", [Mode::Pinch, Mode::Off], false),
+        ("shaper/sync", [Mode::Sync, Mode::Off], false),
+        (
+            "shaper/edges-pulse-width",
+            [Mode::PulseWidth, Mode::Off],
+            false,
+        ),
+        ("shaper/quantise", [Mode::Quantise, Mode::Off], false),
+        ("shaper/remap-drawn", [Mode::RemapDrawn, Mode::Off], false),
+        ("shaper/odd-even", [Mode::OddEven, Mode::Off], false),
+        ("shaper/filter-low-pass", [Mode::LowPass, Mode::Off], false),
+        ("shaper/distortion-valve", [Mode::Valve, Mode::Off], false),
+        (
+            "shaper/distortion-hard-clip",
+            [Mode::HardClip, Mode::Off],
+            false,
+        ),
+        ("shaper/sync-then-valve", [Mode::Sync, Mode::Valve], false),
+        ("shaper/fm", [Mode::Fm1, Mode::Off], true),
+        ("shaper/fm-linear", [Mode::FmLin1, Mode::Off], true),
+        ("shaper/fm-exponential", [Mode::FmExp1, Mode::Off], true),
+        ("shaper/phase-distortion", [Mode::Pd1, Mode::Off], true),
+        ("shaper/ring", [Mode::Rm1, Mode::Off], true),
+        ("shaper/fm-then-ring", [Mode::Fm1, Mode::Rm1], true),
     ] {
         suite.micro(&format!("{name}/simd"), BLOCK, move || {
-            shaped(32, modes, false)
+            shaped(32, modes, false, sourced)
         });
     }
     // One voice, scalar, with audio-rate amount modulation.
     suite.micro("shaper/distortion-valve-modulated/one-voice", BLOCK, || {
-        shaped(1, [Mode::Valve, Mode::Off], true)
+        shaped(1, [Mode::Valve, Mode::Off], true, false)
     });
 
     suite.main()
@@ -134,8 +150,8 @@ fn main() -> ExitCode {
 
 /// A shaped oscillator of `voices` voices with slots in `modes` at 60 %, and
 /// a routine rendering a block of it, its amounts modulated at audio rate
-/// with `modulated`.
-fn shaped(voices: usize, modes: [Mode; 2], modulated: bool) -> impl FnMut() {
+/// with `modulated` and, with `sourced`, a source signal per lane for slot 1.
+fn shaped(voices: usize, modes: [Mode; 2], modulated: bool, sourced: bool) -> impl FnMut() {
     let table = Cache::global()
         .share(wav::read(&wav_bytes(16, Interpolation::None), None).expect("a valid file"));
     let osc = Oscillator::new(
@@ -164,6 +180,13 @@ fn shaped(voices: usize, modes: [Mode; 2], modulated: bool) -> impl FnMut() {
     let modulation: Vec<f32> = (0..BLOCK * lanes)
         .map(|i| 20.0 * ((i / lanes) as f32 * 0.01 + (i % lanes) as f32).sin())
         .collect();
+    // The source: a sine a fifth above the middle of the notes played.
+    let signal: Vec<f32> = (0..BLOCK * lanes)
+        .map(|i| {
+            let at = (i / lanes) as f32 + (i % lanes) as f32;
+            (at * 0.02).sin()
+        })
+        .collect();
     let mut out = vec![0.0f32; BLOCK * lanes];
     move || {
         let inputs = Inputs {
@@ -173,6 +196,11 @@ fn shaped(voices: usize, modes: [Mode; 2], modulated: bool) -> impl FnMut() {
         };
         let mods = ShaperInputs {
             amount_mod: [modulated.then_some(&modulation[..]), None],
+            // Both slots read it: the pairs include FM then Ring.
+            sources: [
+                sourced.then_some(&signal[..]),
+                sourced.then_some(&signal[..]),
+            ],
         };
         osc.process(BLOCK, &inputs, &mods, &mut out);
         black_box(&out);
