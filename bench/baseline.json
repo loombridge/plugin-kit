@@ -266,7 +266,7 @@
     "lspk-wavetable/load/256-frames": 266572040,
     "lspk-wavetable/load/spectral-morph": 257821639,
     "lspk-wavetable/noise/32-voices": 6358154,
-    "lspk-wavetable/noise/generate-colour": 11059792,
+    "lspk-wavetable/noise/generate-colour": 5603352,
     "lspk-wavetable/osc/32-voices-frame-mod/scalar": 2989809,
     "lspk-wavetable/osc/32-voices-frame-mod/simd": 324312,
     "lspk-wavetable/osc/32-voices/scalar": 2135275,
