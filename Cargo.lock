@@ -1456,6 +1456,12 @@ dependencies = [
 [[package]]
 name = "lspk-presets"
 version = "0.0.0"
+dependencies = [
+ "lspk-params",
+ "lspk-plugin",
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "lspk-rt"
