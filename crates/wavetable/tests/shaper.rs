@@ -85,8 +85,8 @@ fn pitches(osc: &ShapedOscillator, keys: &[f32]) -> Vec<f32> {
 }
 
 /// Renders `frames` frames in blocks of `block`, pitch held, amounts
-/// modulated by `modulation(frame, lane)` per slot if given, at `level` or
-/// scalar.
+/// modulated by `modulation(frame, lane)` per slot if given and the source
+/// each slot reads `sources(frame, lane)` if given, at `level` or scalar.
 fn render(
     osc: &mut ShapedOscillator,
     pitch: &[f32],
@@ -94,15 +94,26 @@ fn render(
     block: usize,
     level: Option<SimdLevel>,
     modulation: [Option<&dyn Fn(usize, usize) -> f32>; 2],
+    sources: [Option<&dyn Fn(usize, usize) -> f32>; 2],
 ) -> Vec<f32> {
     let n = osc.osc().lane_count();
     let lanes = osc.osc().layout().voices * osc.osc().layout().lanes_per_voice;
     let mut out = vec![0.0; frames * n];
     let mut mods = [vec![0.0; block * n], vec![0.0; block * n]];
+    let mut signal = [vec![0.0; block * n], vec![0.0; block * n]];
     let mut done = 0;
     while done < frames {
         let len = (frames - done).min(block);
         for (buffer, f) in mods.iter_mut().zip(&modulation) {
+            if let Some(f) = f {
+                for k in 0..len {
+                    for l in 0..n {
+                        buffer[k * n + l] = f(done + k, l);
+                    }
+                }
+            }
+        }
+        for (buffer, f) in signal.iter_mut().zip(&sources) {
             if let Some(f) = f {
                 for k in 0..len {
                     for l in 0..n {
@@ -120,6 +131,10 @@ fn render(
             amount_mod: [
                 modulation[0].map(|_| &mods[0][..len * n]),
                 modulation[1].map(|_| &mods[1][..len * n]),
+            ],
+            sources: [
+                sources[0].map(|_| &signal[0][..len * n]),
+                sources[1].map(|_| &signal[1][..len * n]),
             ],
         };
         let out_block = &mut out[done * n..(done + len) * n];
@@ -150,6 +165,17 @@ fn set(osc: &mut ShapedOscillator, slot: usize, mode: Mode, amount: f32) {
 /// One voice at `key` on `table` with slot 1 in `mode` at `amount`,
 /// rendered for `frames` frames at 48 kHz.
 fn one_note(table: &SharedTable, key: f32, slots: [(Mode, f32); 2], frames: usize) -> Vec<f32> {
+    one_note_source(table, key, slots, [None, None], frames)
+}
+
+/// [`one_note`] with the signal each slot reads `sources(frame, lane)`.
+fn one_note_source(
+    table: &SharedTable,
+    key: f32,
+    slots: [(Mode, f32); 2],
+    sources: [Option<&dyn Fn(usize, usize) -> f32>; 2],
+    frames: usize,
+) -> Vec<f32> {
     let mut osc = shaped(table.clone(), 1, 1, 48_000.0, 512);
     for (i, (mode, amount)) in slots.into_iter().enumerate() {
         set(&mut osc, i, mode, amount);
@@ -163,6 +189,7 @@ fn one_note(table: &SharedTable, key: f32, slots: [(Mode, f32); 2], frames: usiz
         512,
         Some(simd::level()),
         [None, None],
+        sources,
     );
     lane(&out, 0, osc.osc().lane_count())
 }
@@ -234,12 +261,15 @@ fn both_slots_start_off_and_swapping_exchanges_them() {
         (Mode::Sync, 30.0, 0.4)
     );
     // Every mode this package builds is in one stage or the other.
-    assert_eq!(Mode::ALL.len(), 33);
+    assert_eq!(Mode::ALL.len(), 70, "the warp menu's entries");
     let waves = Mode::ALL
         .iter()
         .filter(|m| m.stage() == Stage::Wave)
         .count();
-    assert_eq!(waves, 16, "two filters and fourteen distortions");
+    assert_eq!(
+        waves, 28,
+        "two filters, fourteen distortions, six AM and six ring"
+    );
 }
 
 #[test]
@@ -365,6 +395,7 @@ fn sync_raises_the_harmonics_and_keeps_the_note() {
             16_384,
             512,
             Some(simd::level()),
+            [None, None],
             [None, None],
         );
         let levels = harmonic_levels(&lane(&out, 0, osc.osc().lane_count()), 48_000.0, f0, 120);
@@ -602,6 +633,7 @@ fn worst_aliasing(mode: Mode, amount: f32, keys: &[f32]) -> (f64, f32) {
         512,
         Some(simd::level()),
         [None, None],
+        [None, None],
     );
     let n = osc.osc().lane_count();
     let mut worst = (f64::NEG_INFINITY, 0.0);
@@ -714,6 +746,7 @@ fn busy_render(
                 modulated.then_some(&mods[..]),
                 modulated.then_some(&mods[..]),
             ],
+            sources: [None, None],
         };
         let mut block = vec![0.0; len * n];
         match level {
@@ -727,7 +760,7 @@ fn busy_render(
 }
 
 /// One mode of each family, and pairs across stages.
-const BUSY: [[(Mode, f32); 2]; 9] = [
+const BUSY: [[(Mode, f32); 2]; 10] = [
     [(Mode::Sync, 40.0), (Mode::Off, 0.0)],
     [(Mode::Pinch, 70.0), (Mode::Lean, 20.0)],
     [(Mode::PulseWidth, 50.0), (Mode::Quantise, 70.0)],
@@ -737,6 +770,7 @@ const BUSY: [[(Mode, f32); 2]; 9] = [
     [(Mode::Valve, 50.0), (Mode::Fold, 40.0)],
     [(Mode::HardClip, 70.0), (Mode::Sync, 50.0)],
     [(Mode::Rectify, 60.0), (Mode::SoftSaturate, 80.0)],
+    [(Mode::FmLin1, 30.0), (Mode::Rm1, 40.0)],
 ];
 
 #[test]
@@ -840,6 +874,7 @@ fn unison_offsets_and_modulation_move_each_lane_s_amount() {
             256,
             Some(simd::level()),
             [Some(&f), Some(&f)],
+            [None, None],
         );
         let n = osc.osc().lane_count();
         (lane(&out, 0, n), lane(&out, 1, n))
@@ -946,6 +981,355 @@ fn the_preview_draws_one_cycle_through_both_slots() {
     assert!(db(error / energy) < -20.0);
 }
 
+/// The signal a source makes: a sine of `hertz` at render frame `frame`.
+fn sine_source(hertz: f64, rate: f64) -> impl Fn(usize, usize) -> f32 {
+    move |frame, _| (TAU * hertz * frame as f64 / rate).sin() as f32
+}
+
+/// Bessel J_k(x) by its power series: the amplitude of the sideband k
+/// frequencies away from the carrier of a phase modulation of index `x`.
+fn bessel(k: i32, x: f64) -> f64 {
+    let k = k.unsigned_abs();
+    let mut term = (x / 2.0).powi(k as i32) / (1..=k).map(|i| i as f64).product::<f64>();
+    let mut sum = term;
+    let mut m = 1.0;
+    while term.abs() > 1e-15 {
+        term *= -(x * x / 4.0) / (m * (m + k as f64));
+        sum += term;
+        m += 1.0;
+    }
+    sum
+}
+
+/// The measured levels' ratios in dB, per harmonic of `f0`, against the
+/// analytic amplitudes' squared ratios (`want`, also amplitudes).
+fn check_sidebands(
+    what: &str,
+    levels: &[f64],
+    at: &[(usize, f64)],
+    reference: usize,
+    tolerance_db: f64,
+) {
+    for &(harmonic, amplitude) in at {
+        let got = db(levels[harmonic - 1] / levels[reference - 1]);
+        let want = db((amplitude / at.iter().find(|&&(h, _)| h == reference).unwrap().1).powi(2));
+        println!("{what}: harmonic {harmonic} against {reference}: {got:.1} dB, want {want:.1} dB");
+        assert!(
+            (got - want).abs() < tolerance_db,
+            "{what}: harmonic {harmonic}: {got:.1} dB, want {want:.1} dB"
+        );
+    }
+}
+
+#[test]
+fn fm_sidebands_match_the_analytic_ones_at_a_known_ratio() {
+    // Spec: engine-core R27, R28: the modulator an octave below the
+    // carrier puts every sideband on a whole harmonic of the modulator.
+    let table = share(&[sine()]);
+    let rate = 48_000.0;
+    let key = 69.0f32;
+    let f_c = key_frequency(f64::from(key));
+    let f_m = f_c / 2.0;
+    let source = sine_source(f_m, rate);
+    let levels = |audio: &[f32]| harmonic_levels(audio, rate, f_m, 6);
+
+    // Through-zero FM at 20 %: 83,750 × 0.2⁴ = 134 Hz of deviation, an
+    // index of 134/220.
+    let index = 83_750.0 * 0.2f64.powi(4) / f_m;
+    let audio = one_note_source(
+        &table,
+        key,
+        [(Mode::Fm1, 20.0), (Mode::Off, 0.0)],
+        [Some(&source), None],
+        16_384,
+    );
+    let j = |k: i32| bessel(k, index);
+    check_sidebands(
+        "FM 20 %",
+        &levels(&audio),
+        &[(2, j(0)), (3, j(1)), (4, j(2)), (1, j(1))],
+        2,
+        1.5,
+    );
+
+    // Linear FM clamps only at or below 0 Hz, and the deviation stays well
+    // above 0 here: the same sidebands as through-zero.
+    let linear = one_note_source(
+        &table,
+        key,
+        [(Mode::FmLin1, 20.0), (Mode::Off, 0.0)],
+        [Some(&source), None],
+        16_384,
+    );
+    let worst = audio
+        .iter()
+        .zip(&linear)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    println!("linear against through-zero FM: {worst}");
+    assert!(worst < 1e-4, "{worst}");
+}
+
+#[test]
+fn phase_distortion_am_and_ring_sidebands_match_the_analytic_ones() {
+    // Spec: engine-core R27: each reads the source at audio rate; the
+    // modulator an octave below the carrier keeps its sidebands on the
+    // carrier's harmonics.
+    let table = share(&[sine()]);
+    let rate = 48_000.0;
+    let key = 69.0f32;
+    let f_c = key_frequency(f64::from(key));
+    let f_m = f_c / 2.0;
+    let source = sine_source(f_m, rate);
+    let levels = |audio: &[f32]| harmonic_levels(audio, rate, f_m, 6);
+    let render = |mode, amount| {
+        one_note_source(
+            &table,
+            key,
+            [(mode, amount), (Mode::Off, 0.0)],
+            [Some(&source), None],
+            16_384,
+        )
+    };
+
+    // Phase distortion at 50 %: the phase moves ±0.25 cycles, an index of
+    // π/2 radians.
+    let index = TAU * 0.25;
+    let j = |k: i32| bessel(k, index);
+    check_sidebands(
+        "PD 50 %",
+        &levels(&render(Mode::Pd1, 50.0)),
+        &[(2, j(0)), (3, j(1)), (4, j(2)), (1, j(1))],
+        2,
+        1.5,
+    );
+
+    // AM at 100 %: the carrier stays, halved, with the sidebands a quarter
+    // of the plain carrier's amplitude each.
+    check_sidebands(
+        "AM 100 %",
+        &levels(&render(Mode::Am1, 100.0)),
+        &[(2, 0.5), (3, 0.25), (1, 0.25)],
+        2,
+        1.5,
+    );
+
+    // Ring at 100 %: the carrier is gone, the sidebands half the carrier's
+    // amplitude each.
+    let ring = levels(&render(Mode::Rm1, 100.0));
+    check_sidebands("Ring 100 %", &ring, &[(3, 0.5), (1, 0.5)], 3, 1.5);
+    let carrier = db(ring[1] / ring[0]);
+    println!("Ring 100 %: the carrier is {carrier:.1} dB below harmonic 3");
+    assert!(carrier < -40.0, "{carrier:.1} dB");
+}
+
+#[test]
+fn fm_passes_through_zero_hertz_where_linear_fm_stalls() {
+    // Spec: engine-core R28, observed with a slow modulator: through-zero
+    // FM keeps oscillating through negative frequency; linear FM clamps at
+    // 0 Hz and holds the wave there.
+    let table = share(&[saw()]);
+    let rate = 48_000.0;
+    let key = 33.0f32; // 55 Hz
+    let slow = sine_source(8.0, rate);
+    // Zero crossings over the modulator's negative half (0.3125 to 0.375 s
+    // of an 8 Hz cycle): through-zero keeps oscillating there, linear FM
+    // holds the wave still.
+    let crossings = |audio: &[f32]| {
+        audio[15_000..18_000]
+            .windows(2)
+            .filter(|pair| (pair[0] < 0.0) != (pair[1] < 0.0))
+            .count()
+    };
+    // 40 %: 83,750 × 0.4⁴ = 2,144 Hz of deviation, far past 0 Hz either
+    // side of the 55 Hz carrier.
+    let through = one_note_source(
+        &table,
+        key,
+        [(Mode::Fm1, 40.0), (Mode::Off, 0.0)],
+        [Some(&slow), None],
+        24_000,
+    );
+    let linear = one_note_source(
+        &table,
+        key,
+        [(Mode::FmLin1, 40.0), (Mode::Off, 0.0)],
+        [Some(&slow), None],
+        24_000,
+    );
+    let (through, stalled) = (crossings(&through), crossings(&linear));
+    println!("zero crossings over the stall: through-zero {through}, linear {stalled}");
+    assert!(
+        through > 20,
+        "through-zero crossed zero only {through} times"
+    );
+    assert!(
+        stalled * 5 < through,
+        "linear FM crossed zero {stalled} times against {through}"
+    );
+}
+
+#[test]
+fn a_silent_source_still_modulates_and_a_missing_one_reads_nothing() {
+    // Spec: engine-core R12: a source used by a warp must be on, and may
+    // be at level 0: the caller hands in the signal before its Level.
+    let table = share(&[sine()]);
+    let rate = 48_000.0;
+    let key = 69.0f32;
+    let plain = one_note(&table, key, [(Mode::Off, 0.0), (Mode::Off, 0.0)], 8_192);
+    let fundamental =
+        |audio: &[f32]| harmonic_levels(audio, rate, key_frequency(f64::from(key)), 1)[0];
+    let energy = |audio: &[f32]| audio.iter().map(|x| f64::from(x * x)).sum::<f64>();
+    // A missing source reads nothing: the mode is the plain oscillator
+    // (oversampled, so the renders are near, not bit, identical).
+    for mode in [Mode::Fm1, Mode::Pd1, Mode::Rm1] {
+        let bare = one_note(&table, key, [(mode, 80.0), (Mode::Off, 0.0)], 8_192);
+        let level = db(fundamental(&bare) / fundamental(&plain));
+        let loudness = db(energy(&bare) / energy(&plain));
+        println!(
+            "{} with no source: the fundamental moved {level:.2} dB, the energy {loudness:.2} dB",
+            mode.name()
+        );
+        assert!(level.abs() < 0.5 && loudness.abs() < 0.5, "{}", mode.name());
+    }
+    // The source at Level 0 is silent in the mix yet still modulates.
+    let mut osc = Oscillator::new(
+        share(&[sine()]),
+        Layout {
+            voices: 1,
+            lanes_per_voice: 1,
+        },
+        rate as f32,
+        512,
+        3,
+    );
+    osc.params_mut().level = 100.0;
+    osc.start(0, 57.0, Onset::Fresh);
+    let wave_pitch = vec![57.0; osc.lane_count()];
+    let mut wave = vec![0.0; 512 * osc.lane_count()];
+    osc.process_scalar(
+        512,
+        &Inputs {
+            lanes: 1,
+            pitch: &wave_pitch,
+            ..Inputs::default()
+        },
+        &mut wave,
+    );
+    osc.params_mut().level = 0.0;
+    let mut quiet = vec![0.0; 512 * osc.lane_count()];
+    osc.process_scalar(
+        512,
+        &Inputs {
+            lanes: 1,
+            pitch: &wave_pitch,
+            ..Inputs::default()
+        },
+        &mut quiet,
+    );
+    assert!(wave.iter().any(|&x| x != 0.0) && quiet.iter().all(|&x| x == 0.0));
+    // Its signal before Level, handed in, modulates the carrier.
+    let signal: Vec<f32> = wave
+        .iter()
+        .step_by(osc.lane_count())
+        .cycle()
+        .take(512)
+        .copied()
+        .collect();
+    let f = move |frame: usize, _: usize| signal[frame % 512];
+    let modulated = one_note_source(
+        &table,
+        key,
+        [(Mode::Fm1, 30.0), (Mode::Off, 0.0)],
+        [Some(&f), None],
+        8_192,
+    );
+    let worst = plain
+        .iter()
+        .zip(&modulated)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    println!("a source at Level 0 moves the carrier by {worst}");
+    assert!(worst > 0.1, "{worst}");
+}
+
+#[test]
+fn the_inter_oscillator_modes_stay_band_limited() {
+    // Spec: engine-core R15, R27, R28: a modulator an octave down keeps
+    // every sideband on a harmonic of it, so what's left between the
+    // harmonics is what folded.
+    let rate = 48_000.0;
+    let keys: Vec<f32> = (0..9).map(|i| 60.5 + i as f32 * 3.0).collect();
+    let worst = |mode: Mode, amount: f32, keys: &[f32]| -> (f64, f32) {
+        let mut osc = shaped(share(&[sine()]), keys.len(), 1, rate as f32, 512);
+        set(&mut osc, 0, mode, amount);
+        start_all(&mut osc, keys);
+        let pitch = pitches(&osc, keys);
+        // The source: a sine an octave below each lane's own note.
+        let source = |frame: usize, lane: usize| {
+            let key = keys[lane.min(keys.len() - 1)];
+            (TAU * key_frequency(f64::from(key)) / 2.0 * frame as f64 / rate).sin() as f32
+        };
+        let out = render(
+            &mut osc,
+            &pitch,
+            12_288,
+            512,
+            Some(simd::level()),
+            [None, None],
+            [Some(&source), None],
+        );
+        let n = osc.osc().lane_count();
+        let mut worst = (f64::NEG_INFINITY, 0.0);
+        for (l, &key) in keys.iter().enumerate() {
+            let audio = lane(&out, l, n);
+            let steady = &audio[4096..];
+            // The modulator an octave down is the common fundamental.
+            let band = aliasing_below(
+                steady,
+                rate,
+                Pitch::Steady(key_frequency(f64::from(key)) / 2.0),
+                20_000.0,
+            );
+            if band.ratio_db() > worst.0 {
+                worst = (band.ratio_db(), key);
+            }
+        }
+        worst
+    };
+    let mut failures = Vec::new();
+    // FM's deviations at these amounts (134 and 1,340 Hz at 20 and 50 %)
+    // stay below the lowest carrier here (277 Hz) at the smaller one, so
+    // the sidebands stay in band; deeper, the carrier spends most of the
+    // time below 0 Hz and the wave is a held value with bursts, which
+    // measures as noise rather than aliasing.
+    let families: [(Mode, &[f32]); 6] = [
+        (Mode::Fm1, &[0.0, 10.0, 20.0]),
+        (Mode::FmExp1, &[0.0, 10.0, 20.0]),
+        (Mode::FmLin1, &[0.0, 10.0, 20.0]),
+        (Mode::Pd1, &[0.0, 50.0, 100.0]),
+        (Mode::Am1, &[0.0, 50.0, 100.0]),
+        (Mode::Rm1, &[0.0, 50.0, 100.0]),
+    ];
+    for (mode, amounts) in families {
+        let mut line = format!("{:>14}", mode.name());
+        for &amount in amounts {
+            let (got, key) = worst(mode, amount, &keys);
+            line += &format!("  {amount:>5}%: {got:6.1} dB (key {key})");
+            // R1.4's measured limits: mostly below −80 dB, the worst −50.
+            let bound = if amount == 0.0 { -80.0 } else { -45.0 };
+            if got > bound {
+                failures.push(format!(
+                    "{} {amount}%: {got:.1} dB at key {key}",
+                    mode.name()
+                ));
+            }
+        }
+        println!("{line}");
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 #[test]
 fn rendering_stays_off_the_heap() {
     let table = share(&[saw(), sine()]);
@@ -968,8 +1352,14 @@ fn rendering_stays_off_the_heap() {
             pitch_mod: Some(&pitch_mod),
             ..Inputs::default()
         };
+        // A source for the inter-oscillator modes: reading it must not
+        // allocate either.
+        let signal: Vec<f32> = (0..256 * n)
+            .map(|i| ((i / n) as f32 * 0.05 + (i % n) as f32).sin())
+            .collect();
         let shaper_inputs = ShaperInputs {
             amount_mod: [Some(&mods), Some(&mods)],
+            sources: [Some(&signal), Some(&signal)],
         };
         lspk_rt::rt_test!({
             osc.process(256, &inputs, &shaper_inputs, &mut out);

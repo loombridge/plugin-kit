@@ -150,7 +150,7 @@ pub(super) fn render<P: PhaseStage, W: WaveStage>(
             } else {
                 (fixed, fixed)
             };
-            let stretch = phase_stage.stretch(l, start..(start + len + SUB_BLOCK).min(n));
+            let stretch = phase_stage.stretch(l, start..(start + len + SUB_BLOCK).min(n), own);
             levels.advance(
                 lanes.level_state(l),
                 super::kernel::stretched(own, stretch),

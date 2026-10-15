@@ -4,6 +4,7 @@
 //! need (sine, arctangent, `2^x`, the hyperbolic tangent), each with its
 //! error bounded by a test.
 
+use std::cell::Cell;
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
 use lspk_dsp::simd::{self, F32s, U32s};
@@ -64,6 +65,13 @@ pub(crate) trait Lane:
     /// `table` (`segments + 1` values spanning 0 to 1) read at `x`, linear
     /// between its values; `x` is clamped to 0 to 1.
     fn lookup(table: &[f32], segments: usize, x: Self) -> Self;
+
+    /// The lanes from index `at` of per-lane `cells`, through `scratch` (at
+    /// least `S::LANES` long): one sample's feedback between the stages,
+    /// which both hold as shared cells.
+    fn load_cells(cells: &[Cell<f32>], at: usize, scratch: &mut [f32]) -> Self;
+    /// Writes the lanes to `cells` from index `at`, through `scratch`.
+    fn store_cells(self, cells: &[Cell<f32>], at: usize, scratch: &mut [f32]);
 }
 
 /// Lanes of an [`F32s`], wrapped so they can be a [`Lane`].
@@ -183,6 +191,20 @@ impl<S: F32s> Lane for V<S> {
         let [a, b] = S::gather::<2>(table, whole.to_i32());
         V((b - a).mul_add(at - whole, a))
     }
+    #[inline(always)]
+    fn load_cells(cells: &[Cell<f32>], at: usize, scratch: &mut [f32]) -> Self {
+        for (i, cell) in cells[at..at + S::LANES].iter().enumerate() {
+            scratch[i] = cell.get();
+        }
+        V(S::load(scratch))
+    }
+    #[inline(always)]
+    fn store_cells(self, cells: &[Cell<f32>], at: usize, scratch: &mut [f32]) {
+        self.0.store(scratch);
+        for (i, cell) in cells[at..at + S::LANES].iter().enumerate() {
+            cell.set(scratch[i]);
+        }
+    }
 }
 
 impl Lane for f32 {
@@ -276,6 +298,14 @@ impl Lane for f32 {
         let whole = at.floor().min((segments - 1) as f32);
         let i = whole as usize;
         Lane::mul_add(table[i + 1] - table[i], at - whole, table[i])
+    }
+    #[inline(always)]
+    fn load_cells(cells: &[Cell<f32>], at: usize, _: &mut [f32]) -> Self {
+        cells[at].get()
+    }
+    #[inline(always)]
+    fn store_cells(self, cells: &[Cell<f32>], at: usize, _: &mut [f32]) {
+        cells[at].set(self);
     }
 }
 

@@ -118,6 +118,15 @@ pub(crate) fn apply<L: Lane>(
     out
 }
 
+/// Moves every read in `list` on by `offset` words: where an
+/// inter-oscillator mode adds its own phase (R27).
+#[inline(always)]
+pub(crate) fn shift<L: Lane>(list: &mut ReadList<L>, offset: L::Word) {
+    for i in 0..list.count.max(1) {
+        list.word[i] = L::add_words(list.word[i], offset);
+    }
+}
+
 /// The running phase `word` read as a fraction of a cycle, 0 to 1.
 #[inline(always)]
 fn unit<L: Lane>(word: L::Word) -> L {
