@@ -1004,7 +1004,7 @@ fn tool_result(
 ) -> Value {
     match result {
         Ok(value) => {
-            let text = serde_json::to_string_pretty(&value).unwrap_or_default();
+            let text = value.to_string();
             let mut content = vec![json!({ "type": "text", "text": text })];
             content.extend(media.iter().map(|m| media_block(m, protocol, server)));
             let mut result = json!({
