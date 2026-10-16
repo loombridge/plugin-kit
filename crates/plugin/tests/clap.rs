@@ -11,7 +11,7 @@ use lspk_plugin::{
     AudioLayout, Buffers, Event, Events, Host, NotePorts, ParamValues, Plugin, PluginError,
     PluginInfo, ProcessConfig, ProcessContext, ProcessStatus, Processor, Tail, features,
 };
-use lspk_test::clap::{ClapTestHost, HostEvent, PluginEvent, Requests};
+use lspk_test::clap::{ClapTestHost, HostEvent, PluginEvent, Requests, transport_event};
 
 lspk_rt::install_trap!();
 
@@ -135,6 +135,65 @@ impl Processor for ProbeProcessor {
 }
 
 static PROBE: EntryDescriptor = lspk_plugin::clap_entry!(Probe);
+
+const TRANSPORT_ID: &str = "com.loombridge.test.transport";
+
+/// A plug-in that shows the host's transport in its output: channel 0's
+/// first five samples are its tempo, beats in a bar, playing, beats and
+/// seconds, each NaN when the host offers no transport.
+struct TransportProbe;
+
+impl Plugin for TransportProbe {
+    type Processor = TransportProbeProcessor;
+
+    const INFO: PluginInfo = PluginInfo::new(TRANSPORT_ID, "Transport Probe")
+        .vendor("Loombridge")
+        .features(&[features::AUDIO_EFFECT, features::STEREO])
+        .audio(AudioLayout::effect(2));
+
+    fn new(_host: Host) -> Self {
+        Self
+    }
+
+    fn activate(
+        &mut self,
+        _config: &ProcessConfig,
+        _values: &ParamValues,
+    ) -> Result<TransportProbeProcessor, PluginError> {
+        Ok(TransportProbeProcessor)
+    }
+}
+
+struct TransportProbeProcessor;
+
+impl Processor for TransportProbeProcessor {
+    fn process(
+        &mut self,
+        audio: &mut Buffers<'_>,
+        _events: &Events<'_>,
+        cx: &mut ProcessContext<'_>,
+    ) -> ProcessStatus {
+        audio.silence();
+        let first = match cx.transport() {
+            Some(transport) => [
+                transport.tempo,
+                transport.beats_per_bar,
+                f64::from(transport.playing),
+                transport.beats,
+                transport.seconds,
+            ],
+            None => [f64::NAN; 5],
+        };
+        for (sample, value) in audio.channel_mut(0).iter_mut().zip(first) {
+            *sample = value as f32;
+        }
+        ProcessStatus::Continue
+    }
+
+    fn flush(&mut self, _events: &Events<'_>, _cx: &mut ProcessContext<'_>) {}
+}
+
+static TRANSPORT_PROBE: EntryDescriptor = lspk_plugin::clap_entry!(TransportProbe);
 
 /// A plug-in whose parameters repeat an ID.
 struct Broken;
@@ -358,6 +417,36 @@ fn state_round_trips_and_reaches_an_active_processor() {
     assert!(second.load_state(&foreign).is_err());
     // A refused state changes nothing.
     assert_eq!(second.value(AMOUNT.0), Some(0.125));
+}
+
+#[test]
+fn the_hosts_transport_reaches_the_processor() {
+    let mut host = ClapTestHost::from_entry(&TRANSPORT_PROBE, TRANSPORT_ID).expect("the probe");
+    host.activate(48_000.0, FRAMES as u32).expect("activation");
+    // A free-running host offers no transport.
+    let block = host.process(FRAMES, None, &[]);
+    assert!(block.outputs[0][0].is_nan(), "{:?}", block.outputs[0]);
+
+    // A playing host at 90 BPM, 8.5 beats in, reaches the processor at the
+    // block's first sample.
+    host.set_transport(Some(transport_event(90.0, 8.5, 5.5, true)));
+    let block = host.process(FRAMES, None, &[]);
+    let out = &block.outputs[0];
+    assert!((out[0] - 90.0).abs() < 1e-4, "tempo {}", out[0]);
+    assert!((out[1] - 4.0).abs() < 1e-4, "beats in a bar {}", out[1]);
+    assert_eq!(out[2], 1.0, "playing");
+    assert!((out[3] - 8.5).abs() < 1e-4, "beats {}", out[3]);
+    assert!((out[4] - 5.5).abs() < 1e-4, "seconds {}", out[4]);
+
+    // The host moves the song position on between blocks, as a host does.
+    let block = host.process(FRAMES, None, &[]);
+    let beats = 8.5 + FRAMES as f64 / 48_000.0 * 90.0 / 60.0;
+    assert!((f64::from(block.outputs[0][3]) - beats).abs() < 1e-4);
+
+    // A stopped host says so.
+    host.set_transport(Some(transport_event(120.0, 0.0, 0.0, false)));
+    let block = host.process(FRAMES, None, &[]);
+    assert_eq!(block.outputs[0][2], 0.0, "stopped");
 }
 
 #[test]

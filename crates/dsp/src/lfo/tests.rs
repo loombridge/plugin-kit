@@ -50,7 +50,7 @@ fn play_voice(
             let at = t - pos;
             let (xs, ys) = (&mut x[pos + from..pos + at], &mut y[pos + from..pos + at]);
             lfo.render(&b, voice, from, xs, Some(ys));
-            lfo.trigger(&b, voice, at);
+            lfo.trigger(&b, voice);
             from = at;
         }
         let (xs, ys) = (&mut x[pos + from..pos + n], &mut y[pos + from..pos + n]);
@@ -73,7 +73,8 @@ fn ramp() -> Shape {
 #[test]
 fn the_init_slot_is_the_observed_init_patch() {
     // Spec: engine-core section 10 table (defaults), observed init: Normal
-    // type, Retrig, a triangle, Forward, 8 by 8 grid, synced at 1/4, Mono off.
+    // type, Retrig, a triangle, Forward, 8 by 8 grid, synced at 1/4, Mono
+    // off, Song lock off (its interface default isn't observed yet).
     let s = Settings::default();
     assert_eq!(s.kind, LfoType::Drawn);
     assert_eq!(s.mode, Mode::Restart);
@@ -87,7 +88,7 @@ fn the_init_slot_is_the_observed_init_patch() {
             feel: Feel::Straight
         }
     );
-    assert!(s.song_lock);
+    assert!(!s.song_lock);
     assert_eq!(
         (s.fade_in, s.delay, s.smooth, s.phase),
         (Span::Off, Span::Off, 0.0, 0.0)
@@ -231,6 +232,103 @@ fn song_lock_follows_the_song_position() {
     for (x, y) in xa[4800..].iter().zip(&xb) {
         assert!(close(*x, *y, 1e-5));
     }
+}
+
+#[test]
+fn song_lock_grounds_a_restarted_lfo_in_the_song_position() {
+    // Spec: engine-core R84 (with a synced rate, Song lock fixes the
+    // phase to the host's song position, so changing the rate may jump).
+    let mut s = settings(LfoType::Drawn, Mode::Restart, Rate::default());
+    s.song_lock = true;
+    let mut lfo = Lfo::new(s, 0);
+    lfo.shape_mut()
+        .set_points(&[Point::new(0.0, 0.0), Point::new(1.0, 1.0)]);
+    let mut t = Transport::new(SR);
+    t.playing = true;
+    // A quarter-note cycle at beat 10.25 is a quarter through its cycle.
+    t.beats = 10.25;
+    let out = play(&mut lfo, &mut t.clone(), 1, 1, &[]).0;
+    assert!(close(out[0], 0.25, 1e-6), "{}", out[0]);
+    // From another position the phase differs accordingly: half a cycle on.
+    let mut later = t;
+    later.beats += 0.5;
+    let out = play(&mut lfo, &mut later, 1, 1, &[]).0;
+    assert!(close(out[0], 0.75, 1e-6), "{}", out[0]);
+
+    // A rate change jumps it to stay aligned to the bar, mid-flight.
+    let mut voice = lfo.voice(0);
+    t.beats = 10.25;
+    let out = play_voice(&mut lfo, &mut voice, &mut t, 1, 1, &[]).0;
+    assert!(close(out[0], 0.25, 1e-6), "{}", out[0]);
+    lfo.settings.rate = Rate::Synced {
+        division: Division::new(6).unwrap(),
+        feel: Feel::Straight,
+    };
+    t.beats = 10.25;
+    let out = play_voice(&mut lfo, &mut voice, &mut t, 1, 1, &[]).0;
+    assert!(close(out[0], 0.125, 1e-6), "{}", out[0]);
+}
+
+#[test]
+fn a_note_does_not_move_a_song_locked_lfo() {
+    // Spec: engine-core R84 (the phase is a function of the song position,
+    // not of when a note came); R83, R88 still restart Delay and Fade in.
+    let mut s = settings(LfoType::Drawn, Mode::Restart, Rate::default());
+    s.song_lock = true;
+    let mut t = Transport::new(SR);
+    t.playing = true;
+    t.beats = 2.0;
+    let plain = play(&mut Lfo::new(s, 0), &mut t.clone(), 1024, 128, &[]).0;
+    let noted = play(&mut Lfo::new(s, 0), &mut t.clone(), 1024, 128, &[500]).0;
+    assert_eq!(plain, noted);
+    // Two runs that start at the same song position play the same phases,
+    // and one starting elsewhere differs by where it starts.
+    let a = play(&mut Lfo::new(s, 0), &mut t.clone(), 4096, 64, &[]).0;
+    let b = play(&mut Lfo::new(s, 0), &mut t.clone(), 4096, 64, &[]).0;
+    assert_eq!(a, b);
+    let mut elsewhere = t;
+    elsewhere.beats += 0.25;
+    let c = play(&mut Lfo::new(s, 0), &mut elsewhere, 4096, 64, &[]).0;
+    assert!(
+        c.iter().zip(&a).any(|(x, y)| (x - y).abs() > 0.25),
+        "a quarter of a cycle apart is a different phase"
+    );
+}
+
+#[test]
+fn song_lock_with_a_rate_in_hertz_follows_the_transports_seconds() {
+    // Spec: engine-core R84 (with tempo sync off, Song lock decides whether
+    // a restarted LFO computes its phase from the transport position).
+    let mut s = settings(LfoType::Drawn, Mode::Restart, hz(1.0));
+    s.song_lock = true;
+    let mut lfo = Lfo::new(s, 0);
+    lfo.shape_mut()
+        .set_points(&[Point::new(0.0, 0.0), Point::new(1.0, 1.0)]);
+    let mut t = Transport::new(SR);
+    t.playing = true;
+    t.seconds = 0.25;
+    let out = play(&mut lfo, &mut t.clone(), 1, 1, &[]).0;
+    assert!(close(out[0], 0.25, 1e-6), "{}", out[0]);
+
+    // Without song lock the same moment runs free of the transport.
+    lfo.settings.song_lock = false;
+    let out = play(&mut lfo, &mut t, 1, 1, &[]).0;
+    assert_eq!(out[0], 0.0);
+}
+
+#[test]
+fn a_locked_lfo_runs_free_of_the_transport_when_the_host_is_stopped() {
+    // Spec: engine-core R84 (song lock only follows a playing host).
+    let mut locked = settings(LfoType::Drawn, Mode::Restart, Rate::default());
+    locked.song_lock = true;
+    let mut free = locked;
+    free.song_lock = false;
+    let mut t = Transport::new(SR);
+    t.playing = false;
+    t.beats = 10.25;
+    let a = play(&mut Lfo::new(locked, 0), &mut t.clone(), 4096, 64, &[0]).0;
+    let b = play(&mut Lfo::new(free, 0), &mut t, 4096, 64, &[0]).0;
+    assert_eq!(a, b);
 }
 
 #[test]
@@ -786,6 +884,13 @@ fn output_does_not_depend_on_block_size() {
     let a = play(&mut shaped(s), &mut t.clone(), 12_000, 12_000, &[]).0;
     let b = play(&mut shaped(s), &mut t.clone(), 12_000, 37, &[]).0;
     assert!(a.iter().zip(&b).all(|(a, b)| close(*a, *b, 1e-5)));
+
+    // A song-locked restarted LFO reads the same position the same way.
+    let mut s = settings(LfoType::Drawn, Mode::Restart, Rate::default());
+    s.song_lock = true;
+    let a = play(&mut shaped(s), &mut t.clone(), 12_000, 12_000, &[777]).0;
+    let b = play(&mut shaped(s), &mut t.clone(), 12_000, 37, &[777]).0;
+    assert!(a.iter().zip(&b).all(|(a, b)| close(*a, *b, 1e-5)));
 }
 
 #[test]
@@ -802,11 +907,18 @@ fn the_simd_path_matches_the_scalar_path_at_every_level() {
     // Spec: plan "Performance" (SIMD across voices)
     const VOICES: usize = 19;
     const FRAMES: usize = 300;
-    for s in variety().into_iter().chain([Settings {
-        shared: true,
-        ..settings(LfoType::Drawn, Mode::Restart, hz(9.0))
-    }]) {
+    for s in variety().into_iter().chain([
+        Settings {
+            shared: true,
+            ..settings(LfoType::Drawn, Mode::Restart, hz(9.0))
+        },
+        Settings {
+            song_lock: true,
+            ..settings(LfoType::Path, Mode::Restart, Rate::default())
+        },
+    ]) {
         let mut t = Transport::new(SR);
+        t.playing = true;
         t.swing = 0.3;
         let mut scalar = LfoBank::new(shaped(s), VOICES);
         let mut expected = vec![0.0; VOICES * FRAMES * 4];

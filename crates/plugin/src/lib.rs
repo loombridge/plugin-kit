@@ -80,7 +80,9 @@ pub use editor::{
     WindowApi,
 };
 pub use events::{Event, EventSource, Events, Expression, Note};
-pub use host::{EditError, EventSink, Host, HostBackend, OutputEvent, ProcessContext, Waker};
+pub use host::{
+    EditError, EventSink, Host, HostBackend, OutputEvent, ProcessContext, Transport, Waker,
+};
 pub use lspk_commands::{RegisterError, Registry};
 pub use lspk_params::{ParamDescriptor, ParamId, ParamSpace, ParamView};
 pub use params::ParamValues;

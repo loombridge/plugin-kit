@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 use lspk_plugin::host::Edit;
 use lspk_plugin::{
-    Buffers, Event, Events, MAX_CHANNELS, Note, ParamValues, ProcessContext, ProcessStatus,
-    Processor,
+    Buffers, Event, Events, MAX_CHANNELS, Note, ParamValues, ProcessConfig, ProcessContext,
+    ProcessStatus, Processor, Transport,
 };
 use rtrb::Consumer;
 
@@ -54,25 +54,29 @@ pub struct Engine<Pr: Processor> {
     channels: Box<[Box<[f32]>]>,
     /// The plug-in's main input channels; 0 for an instrument.
     inputs: usize,
+    sample_rate: f64,
     max_frames: usize,
+    /// The app's own clock, the transport a host would give: it plays, at
+    /// 120 beats per minute, from the start of the stream.
+    transport: Transport,
     asleep: bool,
     meter: Arc<Meter>,
 }
 
 impl<Pr: Processor> Engine<Pr> {
-    /// An engine running `processor` in blocks of at most `max_frames`, with
-    /// the plug-in's `inputs` and `outputs` channels, taking edits and MIDI
-    /// from the two queues.
+    /// An engine running `processor` with the plug-in's `inputs` and
+    /// `outputs` channels at `config`, taking edits and MIDI from the two
+    /// queues.
     pub fn new(
         processor: Pr,
         values: Arc<ParamValues>,
         edits: Consumer<Edit>,
         midi: Consumer<MidiMessage>,
         (inputs, outputs): (u16, u16),
-        max_frames: u32,
+        config: ProcessConfig,
         meter: Arc<Meter>,
     ) -> Self {
-        let max_frames = max_frames.max(1) as usize;
+        let max_frames = config.max_frames.max(1) as usize;
         let channels = usize::from(outputs).min(MAX_CHANNELS);
         let capacity = edits.buffer().capacity() + midi.buffer().capacity();
         Self {
@@ -85,7 +89,12 @@ impl<Pr: Processor> Engine<Pr> {
                 .map(|_| vec![0.0; max_frames].into_boxed_slice())
                 .collect(),
             inputs: usize::from(inputs).min(channels),
+            sample_rate: config.sample_rate,
             max_frames,
+            transport: Transport {
+                playing: true,
+                ..Transport::default()
+            },
             asleep: false,
             meter,
         }
@@ -163,11 +172,14 @@ impl<Pr: Processor> Engine<Pr> {
                     unsafe { Buffers::from_raw(pointers, self.channels.len(), frames) };
                 let events = Events::from_slice(&self.events);
                 let mut sink = ();
-                let mut cx = ProcessContext::new(&self.values, &mut sink);
+                let mut cx =
+                    ProcessContext::with_transport(&self.values, &mut sink, Some(&self.transport));
                 let status = self.processor.process(&mut buffers, &events, &mut cx);
                 self.asleep = status == ProcessStatus::Sleep;
                 self.events.clear();
             }
+            // The clock runs whether or not the plug-in does.
+            self.transport.advance(frames, self.sample_rate);
             let block = &mut output[done * channels..(done + frames) * channels];
             interleave(&self.channels, frames, block, channels);
             peak = block.iter().fold(peak, |peak, s| peak.max(s.abs()));
@@ -426,5 +438,64 @@ mod tests {
         meter.record(0.125);
         assert_eq!(meter.take(), 0.5);
         assert_eq!(meter.take(), 0.0);
+    }
+
+    /// A processor that lays the transport it sees into its first channel:
+    /// the tempo, the song position in beats and seconds, and whether the
+    /// host plays.
+    struct ClockProbe;
+
+    impl Processor for ClockProbe {
+        fn process(
+            &mut self,
+            audio: &mut Buffers<'_>,
+            _events: &Events<'_>,
+            cx: &mut ProcessContext<'_>,
+        ) -> ProcessStatus {
+            audio.silence();
+            let fields = match cx.transport() {
+                Some(transport) => [
+                    transport.tempo,
+                    transport.beats,
+                    transport.seconds,
+                    f64::from(transport.playing),
+                ],
+                None => [f64::NAN; 4],
+            };
+            for (sample, value) in audio.channel_mut(0).iter_mut().zip(fields) {
+                *sample = value as f32;
+            }
+            ProcessStatus::Continue
+        }
+
+        fn flush(&mut self, _events: &Events<'_>, _cx: &mut ProcessContext<'_>) {}
+    }
+
+    #[test]
+    fn the_apps_clock_serves_as_the_transport() {
+        let values = Arc::new(ParamValues::new(Vec::new()).expect("no parameters"));
+        let (_edit_tx, edits) = rtrb::RingBuffer::new(8);
+        let (_midi_tx, midi) = rtrb::RingBuffer::new(8);
+        let mut engine = Engine::new(
+            ClockProbe,
+            values,
+            edits,
+            midi,
+            (0, 2),
+            ProcessConfig::new(48_000.0, 64),
+            Arc::new(Meter::default()),
+        );
+        // Two blocks of 64 frames, interleaved stereo.
+        let mut out = vec![0.0f32; 2 * 128];
+        engine.render(&[], 0, &mut out, 2);
+        // The app plays its own clock: 120 beats per minute from the start.
+        assert_eq!(out[0], 120.0);
+        assert_eq!(out[2], 0.0);
+        assert_eq!(out[4], 0.0);
+        assert_eq!(out[6], 1.0);
+        // By the second block the clock has moved on by 64 samples.
+        assert_eq!(out[128], 120.0);
+        assert!((f64::from(out[130]) - 64.0 / 48_000.0 * 2.0).abs() < 1e-5);
+        assert!((f64::from(out[132]) - 64.0 / 48_000.0).abs() < 1e-6);
     }
 }

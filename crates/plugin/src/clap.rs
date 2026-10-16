@@ -57,7 +57,8 @@ use clack_extensions::track_info::{
 };
 use clack_plugin::entry::{DefaultPluginFactory, SinglePluginEntry};
 use clack_plugin::events::event_types::{
-    NoteEndEvent, ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent,
+    NoteEndEvent, ParamGestureBeginEvent, ParamGestureEndEvent, ParamValueEvent, TransportEvent,
+    TransportFlags,
 };
 use clack_plugin::events::io::{InputEvents, OutputEvents};
 use clack_plugin::events::spaces::CoreEventSpace;
@@ -86,7 +87,9 @@ use crate::editor::{
     Editor, EditorChanges, EditorContext, EditorHost, EditorSize, ParentWindow, WindowApi,
 };
 use crate::events::{Event, EventSource, Events, Expression, Note};
-use crate::host::{Edit, EventSink, Host, HostBackend, OutputEvent, ProcessContext, Waker};
+use crate::host::{
+    Edit, EventSink, Host, HostBackend, OutputEvent, ProcessContext, Transport, Waker,
+};
 use crate::params::ParamValues;
 use crate::{Plugin, ProcessConfig, ProcessStatus, Processor, Tail, state};
 
@@ -685,7 +688,7 @@ impl<'a, P: Plugin> PluginAudioProcessor<'a, ClapShared<'a, P>, ClapMainThread<'
 
     fn process(
         &mut self,
-        _process: Process<'_>,
+        process: Process<'_>,
         mut audio: Audio<'_>,
         events: ClackEvents<'_>,
     ) -> Result<ClackStatus, ClackError> {
@@ -746,7 +749,8 @@ impl<'a, P: Plugin> PluginAudioProcessor<'a, ClapShared<'a, P>, ClapMainThread<'
             output: events.output,
             values: &self.values,
         };
-        let mut cx = ProcessContext::new(&self.values, &mut sink);
+        let transport = process.transport.map(host_transport);
+        let mut cx = ProcessContext::with_transport(&self.values, &mut sink, transport.as_ref());
         let status = processor.process(&mut buffers, &events_in, &mut cx);
         Ok(match status {
             ProcessStatus::Continue => ClackStatus::Continue,
@@ -808,6 +812,36 @@ fn drain(
             }
         }
     }
+}
+
+/// The host's CLAP transport as the kit's: each field the event's flags
+/// mark as present, the kit's default for the rest — a position without its
+/// timeline flag, or a tempo without its own, says nothing.
+fn host_transport(event: &TransportEvent) -> Transport {
+    let flags = event.flags;
+    let mut transport = Transport::default();
+    if flags.contains(TransportFlags::HAS_TEMPO) {
+        transport.tempo = event.tempo;
+    }
+    if flags.contains(TransportFlags::IS_PLAYING) {
+        transport.playing = true;
+    }
+    if flags.contains(TransportFlags::HAS_BEATS_TIMELINE) {
+        transport.beats = event.song_pos_beats.to_float();
+    }
+    if flags.contains(TransportFlags::HAS_SECONDS_TIMELINE) {
+        transport.seconds = event.song_pos_seconds.to_float();
+    }
+    if flags.contains(TransportFlags::HAS_TIME_SIGNATURE) {
+        let (numerator, denominator) = (
+            event.time_signature_numerator,
+            event.time_signature_denominator,
+        );
+        if numerator > 0 && denominator > 0 {
+            transport.beats_per_bar = f64::from(numerator) * 4.0 / f64::from(denominator);
+        }
+    }
+    transport
 }
 
 /// Records each of the host's parameter changes in `values`; returns
