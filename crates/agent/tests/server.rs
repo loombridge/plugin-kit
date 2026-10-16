@@ -302,7 +302,7 @@ fn calls_and_events_wait_for_the_gesture_and_the_host() {
     assert_eq!(server.deferred(), [ticket]);
     server.finish_deferred(ticket, |asked| {
         Ok((
-            json!({ "of": asked }),
+            json!({ "of": asked, "list": [1, 2] }),
             vec![Media {
                 mime_type: "image/png",
                 bytes: vec![1, 2, 3],
@@ -315,6 +315,13 @@ fn calls_and_events_wait_for_the_gesture_and_the_host() {
     };
     assert_eq!(answered, ticket);
     assert_eq!(reply["result"]["structuredContent"]["of"], "picture");
+    // The text block is compact JSON holding the same value as `structuredContent`.
+    let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(!text.contains(['\n', ' ']), "compact: {text}");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(text).unwrap(),
+        reply["result"]["structuredContent"]
+    );
     assert_eq!(reply["result"]["content"][1]["type"], "image");
     assert!(!server.holds_calls());
 }
