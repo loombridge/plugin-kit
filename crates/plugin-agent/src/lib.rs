@@ -37,6 +37,9 @@
 //! lspk_plugin::export_clap!(lspk_plugin_agent::WithAgent<MyPlugin>);
 //! ```
 //!
+//! The same tools run headless, with no host, over stdio: see
+//! [`headless`].
+//!
 //! # Threads
 //!
 //! Every tool call runs on the host's main thread, in
@@ -54,6 +57,7 @@
 //! editor is open, so the server answers only then.
 
 pub mod commands;
+pub mod headless;
 pub mod perception;
 mod server;
 mod state;

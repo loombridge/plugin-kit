@@ -135,6 +135,10 @@ impl Program for Toy {
         self.snapshots.push(ticket);
     }
 
+    fn await_deferred(&mut self, ticket: u64) -> Option<Result<(Value, Vec<Media>), String>> {
+        Some(Ok((json!({ "waited_for": ticket }), Vec::new())))
+    }
+
     fn allows(&self, host: &Host, agent: &str) -> bool {
         host.allowed.iter().any(|a| a == agent)
     }
@@ -347,6 +351,28 @@ fn stdio_serves_one_session() {
     assert_eq!(replies.len(), 3);
     assert_eq!(replies[1]["error"]["code"], -32_700);
     assert_eq!(host.gain, -2.0);
+}
+
+#[test]
+fn stdio_waits_for_a_call_the_host_answers() {
+    let mut server = Server::new(Mode::Headless { autonomous: false }, Toy::default());
+    let mut host = Host::default();
+    let input = concat!(
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+        "\n",
+        r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"snapshot","arguments":{}}}"#,
+        "\n",
+    );
+    let mut output = Vec::new();
+    lspk_agent::stdio::serve(&mut server, &mut host, input.as_bytes(), &mut output).unwrap();
+    let replies: Vec<Value> = String::from_utf8(output)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(replies.len(), 2);
+    assert_eq!(replies[1]["id"], 2);
+    assert_eq!(replies[1]["result"]["structuredContent"]["waited_for"], 1);
 }
 
 fn endpoint() -> Endpoint {

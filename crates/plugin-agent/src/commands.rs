@@ -190,6 +190,40 @@ impl std::fmt::Debug for ServerStatus {
 ///
 /// One of them is already registered.
 pub fn register(registry: &mut Registry) -> Result<(), RegisterError> {
+    register_params(registry)?;
+    registry.register(
+        CommandSpec::new(SET_SERVER, "Agent Server")
+            .description(
+                "Switches the plug-in's agent server on or off. While on, agents on this computer \
+                 that have its token can control this instance; the setting is saved with the \
+                 project. Only a person can run it.",
+            )
+            .permission(Permission::External)
+            .context(Context::Global)
+            .args::<SetServerArgs>()
+            .result::<ServerStatus>(),
+    )?;
+    registry.register(
+        CommandSpec::new(SERVER_STATUS, "Agent Server Status")
+            .description(
+                "Says whether the plug-in's agent server is on, where agents connect, its token, \
+                 and its discovery file, for the person to give to an agent. Only a person can \
+                 run it.",
+            )
+            .permission(Permission::Read)
+            .context(Context::Global)
+            .args::<NoArgs>()
+            .result::<ServerStatus>(),
+    )
+}
+
+/// Adds the commands for the plug-in's parameters (`params.get`,
+/// `params.set`) to `registry`: all a plug-in run headless has of the kit's.
+///
+/// # Errors
+///
+/// One of them is already registered.
+pub fn register_params(registry: &mut Registry) -> Result<(), RegisterError> {
     registry.register(
         CommandSpec::new(GET, "Get Parameters")
             .description(
@@ -218,30 +252,6 @@ pub fn register(registry: &mut Registry) -> Result<(), RegisterError> {
             .context(Context::Global)
             .args::<SetArgs>()
             .result::<ParamsResult>(),
-    )?;
-    registry.register(
-        CommandSpec::new(SET_SERVER, "Agent Server")
-            .description(
-                "Switches the plug-in's agent server on or off. While on, agents on this computer \
-                 that have its token can control this instance; the setting is saved with the \
-                 project. Only a person can run it.",
-            )
-            .permission(Permission::External)
-            .context(Context::Global)
-            .args::<SetServerArgs>()
-            .result::<ServerStatus>(),
-    )?;
-    registry.register(
-        CommandSpec::new(SERVER_STATUS, "Agent Server Status")
-            .description(
-                "Says whether the plug-in's agent server is on, where agents connect, its token, \
-                 and its discovery file, for the person to give to an agent. Only a person can \
-                 run it.",
-            )
-            .permission(Permission::Read)
-            .context(Context::Global)
-            .args::<NoArgs>()
-            .result::<ServerStatus>(),
     )
 }
 

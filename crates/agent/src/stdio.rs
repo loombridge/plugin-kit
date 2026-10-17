@@ -86,14 +86,22 @@ pub fn serve_until<P: Program>(
                 Outcome::Ask(question) => server.resolve(host, question.id, false),
                 // Headless, no person's gesture is ever under way, so
                 // nothing waits for one to end; run it now if anything did.
-                Outcome::Wait(ticket) => server
-                    .resume(host)
-                    .filter(|(resumed, _)| *resumed == ticket)
-                    .and_then(|(_, outcome)| match outcome {
-                        Outcome::Reply(reply) => reply,
-                        Outcome::Ask(question) => server.resolve(host, question.id, false),
-                        Outcome::Wait(_) => None,
-                    }),
+                // A call that waits for the host gets its answer first.
+                Outcome::Wait(ticket) => {
+                    if server.deferred().contains(&ticket)
+                        && let Some(result) = server.program_mut().await_deferred(ticket)
+                    {
+                        server.finish_deferred(ticket, |_| result);
+                    }
+                    server
+                        .resume(host)
+                        .filter(|(resumed, _)| *resumed == ticket)
+                        .and_then(|(_, outcome)| match outcome {
+                            Outcome::Reply(reply) => reply,
+                            Outcome::Ask(question) => server.resolve(host, question.id, false),
+                            Outcome::Wait(_) => None,
+                        })
+                }
             },
         };
         if let Some(reply) = reply {

@@ -4,7 +4,7 @@
 use std::marker::PhantomData;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use lspk_agent::permission::{Decision, Mode, Rules, decide, permit};
 use lspk_agent::{Call, Media, Program, ServerInfo, ToolOutcome, tool_definition};
@@ -26,12 +26,6 @@ pub const GUIDE: &str = include_str!("../guide.md");
 /// ([`Plugin::guide`]).
 pub const PLUGIN_GUIDE_URI: &str = "lspk://plugin-guide";
 
-const RULES: Rules<'static> = Rules {
-    person_only: &person_only,
-    settings: "the plug-in's agent settings",
-    headless: "the plug-in",
-};
-
 /// What a finished preview hands back: its call's ticket and its result.
 type Finished = (u64, Result<(Value, Vec<Media>), String>);
 
@@ -46,8 +40,15 @@ struct Checkpoint {
 
 /// The tools, and what they keep between calls: checkpoints, and previews
 /// rendering on threads of their own.
-pub(crate) struct Tools<P: Plugin> {
+///
+/// Inside a running plug-in ([`WithAgent`](crate::WithAgent)) they ask the
+/// person; headless ([`headless`](crate::headless)) they run as the mode
+/// says.
+pub struct Tools<P: Plugin> {
     host: Host,
+    mode: Mode,
+    /// The headless command, as a refusal names it.
+    command: String,
     checkpoints: Vec<Checkpoint>,
     finished_tx: mpsc::Sender<Finished>,
     finished_rx: mpsc::Receiver<Finished>,
@@ -173,10 +174,16 @@ macro_rules! tool_args {
 }
 
 impl<P: Plugin> Tools<P> {
-    pub(crate) fn new(host: Host) -> Self {
+    /// The tools of the plug-in `host` links to, deciding which commands run
+    /// by `mode`. `command` is how a refusal names the headless server
+    /// (such as `my-synth-cli mcp`).
+    #[must_use]
+    pub fn new(host: Host, mode: Mode, command: &str) -> Self {
         let (finished_tx, finished_rx) = mpsc::channel();
         Self {
             host,
+            mode,
+            command: command.to_owned(),
             checkpoints: Vec::new(),
             finished_tx,
             finished_rx,
@@ -191,10 +198,40 @@ impl<P: Plugin> Tools<P> {
     }
 
     /// What running commands of `class` comes to for an agent.
-    fn decide(class: Permission, ids: &[&str]) -> Decision {
+    fn decide(&self, class: Permission, ids: &[&str]) -> Decision {
         // The plug-in has a person to ask, through its editor; autonomous
         // mode for its agents comes with that editor.
-        decide(Mode::App, &RULES, || false, class, ids)
+        let rules = Rules {
+            person_only: &person_only,
+            settings: "the plug-in's agent settings",
+            headless: &self.command,
+        };
+        decide(self.mode, &rules, || false, class, ids)
+    }
+
+    /// Whether running `spec` would run, ask the person first, or be
+    /// refused.
+    fn access(&self, spec: &CommandSpec) -> &'static str {
+        let class = spec.permission.unwrap_or(Permission::External);
+        match self.decide(class, &[spec.id.as_ref()]) {
+            Decision::Run => "runs",
+            Decision::Ask => "asks the person first",
+            Decision::Refuse(_) => "refused to agents",
+        }
+    }
+
+    /// Every command the plug-in offers. Headless there is no agent server
+    /// to switch, so the kit's commands for it are left out.
+    fn registry(&self, plugin: &P) -> Result<Registry, lspk_commands::RegisterError> {
+        match self.mode {
+            Mode::App => commands::registry(plugin),
+            Mode::Headless { .. } => {
+                let mut registry = Registry::new();
+                commands::register_params(&mut registry)?;
+                plugin.register_commands(&mut registry)?;
+                Ok(registry)
+            }
+        }
     }
 
     /// The live instance's values, as a snapshot.
@@ -209,9 +246,9 @@ impl<P: Plugin> Tools<P> {
         })
     }
 
-    fn list(plugin: &P, args: &Value) -> Result<Value, String> {
+    fn list(&self, plugin: &P, args: &Value) -> Result<Value, String> {
         let ListArgs { area, search } = parse(args)?;
-        let registry = commands::registry(plugin).map_err(|e| e.to_string())?;
+        let registry = self.registry(plugin).map_err(|e| e.to_string())?;
         if area.is_none() && search.is_none() {
             let mut areas = std::collections::BTreeMap::<&str, usize>::new();
             for spec in &registry {
@@ -256,23 +293,23 @@ impl<P: Plugin> Tools<P> {
                     "id": spec.id,
                     "label": spec.label,
                     "permission": spec.permission,
-                    "access": access(spec),
+                    "access": self.access(spec),
                     "summary": first_sentence(&spec.description),
                 }))
                 .collect::<Vec<_>>(),
         }))
     }
 
-    fn describe(plugin: &P, args: &Value) -> Result<Value, String> {
+    fn describe(&self, plugin: &P, args: &Value) -> Result<Value, String> {
         let DescribeArgs { command } = parse(args)?;
-        let registry = commands::registry(plugin).map_err(|e| e.to_string())?;
+        let registry = self.registry(plugin).map_err(|e| e.to_string())?;
         let spec = find(&registry, &command)?;
         Ok(json!({
             "id": spec.id,
             "label": spec.label,
             "description": spec.description,
             "permission": spec.permission,
-            "access": access(spec),
+            "access": self.access(spec),
             "args": spec.args,
             "result": spec.result,
         }))
@@ -284,7 +321,7 @@ impl<P: Plugin> Tools<P> {
             Err(message) => return ToolOutcome::Done(Err(message)),
         };
         let plugin = call.host;
-        let registry = match commands::registry(plugin) {
+        let registry = match self.registry(plugin) {
             Ok(registry) => registry,
             Err(error) => return ToolOutcome::Done(Err(error.to_string())),
         };
@@ -321,7 +358,7 @@ impl<P: Plugin> Tools<P> {
                 .copied()
                 .max()
                 .unwrap_or(Permission::External);
-            let decision = match Self::decide(class, &ids) {
+            let decision = match self.decide(class, &ids) {
                 Decision::Run => "runs".to_owned(),
                 Decision::Ask => "asks the person first".to_owned(),
                 Decision::Refuse(message) => format!("refused: {message}"),
@@ -339,7 +376,7 @@ impl<P: Plugin> Tools<P> {
         if let Err(outcome) = permit(
             &classes,
             call.confirmed,
-            |class| Self::decide(class, &ids),
+            |class| self.decide(class, &ids),
             || {
                 commands
                     .iter()
@@ -494,17 +531,6 @@ impl<P: Plugin> Tools<P> {
     }
 }
 
-/// Whether running a command would run, ask the person first, or be
-/// refused.
-fn access(spec: &CommandSpec) -> &'static str {
-    let class = spec.permission.unwrap_or(Permission::External);
-    match decide(Mode::App, &RULES, || false, class, &[spec.id.as_ref()]) {
-        Decision::Run => "runs",
-        Decision::Ask => "asks the person first",
-        Decision::Refuse(_) => "refused to agents",
-    }
-}
-
 fn find<'a>(registry: &'a Registry, id: &str) -> Result<&'a CommandSpec, String> {
     registry
         .get(id)
@@ -530,12 +556,16 @@ impl<P: Plugin> Program for Tools<P> {
             title: info.name.to_owned(),
             version: info.version.to_owned(),
             instructions: format!(
-                "You're connected to one running instance of {}, a plug-in in a host, through \
-                 its own agent server. Read the resource {GUIDE_URI} first, and {PLUGIN_GUIDE_URI} \
-                 where the plug-in has one. Start with `query` to \
+                "You're connected to {} {}. Read the resource {GUIDE_URI} first, and \
+                 {PLUGIN_GUIDE_URI} where the plug-in has one. Start with `query` to \
                  see its parameters and a summary; change them with `run` and `params.set`; \
                  hear the result with `preview`; keep and restore versions with `checkpoint`.",
-                info.name
+                info.name,
+                match self.mode {
+                    Mode::App =>
+                        "one running instance of a plug-in in a host, through its own agent server",
+                    Mode::Headless { .. } => "running headless, with no host and no window",
+                }
             ),
         }
     }
@@ -611,8 +641,8 @@ impl<P: Plugin> Program for Tools<P> {
     ) -> Result<ToolOutcome<Job>, String> {
         let done = |result: Result<Value, String>| Ok(ToolOutcome::Done(result));
         match name {
-            "list_commands" => done(Self::list(call.host, &args)),
-            "describe_command" => done(Self::describe(call.host, &args)),
+            "list_commands" => done(self.list(call.host, &args)),
+            "describe_command" => done(self.describe(call.host, &args)),
             "run" => Ok(self.run(call, &args)),
             "query" => done(self.query(call.host, &args)),
             "checkpoint" => done(self.checkpoint(call.host, &args)),
@@ -625,6 +655,28 @@ impl<P: Plugin> Program for Tools<P> {
                 })
             }
             other => Err(format!("no tool is called `{other}`")),
+        }
+    }
+
+    fn await_deferred(&mut self, ticket: u64) -> Option<Result<(Value, Vec<Media>), String>> {
+        // One call at a time over stdio, so the next finished preview is
+        // this call's.
+        loop {
+            match self.finished_rx.recv_timeout(Duration::from_millis(100)) {
+                Ok((finished, result)) if finished == ticket => return Some(result),
+                Ok(_) => {}
+                // A preview thread that panicked never sends: don't wait for it.
+                Err(mpsc::RecvTimeoutError::Timeout)
+                    if self.workers.iter().all(JoinHandle::is_finished) =>
+                {
+                    return match self.finished_rx.try_recv() {
+                        Ok((finished, result)) if finished == ticket => Some(result),
+                        _ => Some(Err("the preview stopped before it finished".to_owned())),
+                    };
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+            }
         }
     }
 

@@ -25,7 +25,7 @@ Every crate carries the prefix `lspk-`.
 | `lspk-presets` | The preset format (documented, versioned JSON), the preset library, A/B compare, undo history |
 | `lspk-ui` | The egui widget set, theming, zoom, AccessKit, host-window embedding through baseview |
 | `lspk-plugin` | The format layer: the `Plugin` trait and its CLAP, VST3, Audio Unit, standalone and Beatlayer exports, and `com.loombridge.agent-commands`, the CLAP extension through which a host lists a plug-in's commands and serves them through its own agent interface |
-| `lspk-plugin-agent` | The agent interface inside a running plug-in: its parameters and commands as tools, its own MCP server on loopback, discovery, checkpoints and previews it hears offline |
+| `lspk-plugin-agent` | The agent interface inside a running plug-in: its parameters and commands as tools, its own MCP server on loopback (or the same tools headless over stdio, for a command-line tool), discovery, checkpoints and previews it hears offline |
 | `lspk-clap-wrapper` | free-audio's [clap-wrapper](https://github.com/free-audio/clap-wrapper) and the SDK sources it needs (VST3 SDK, AudioUnitSDK), vendored and built with `cc`, which make the VST3 and Audio Unit v2 exports from the CLAP one |
 | `lspk-standalone` | The standalone app: any plug-in run as an application, with audio and MIDI device choice, the computer keyboard, settings kept between runs, and state files |
 | `lspk-test` | The headless test harness: renders, golden renders and null tests, measurements, format validators, a scripted MCP client, benchmarks |
