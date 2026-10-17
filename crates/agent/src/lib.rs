@@ -17,6 +17,7 @@
 //! | [`client`] | A scripted MCP client over either, or in this process, for scripts and tests |
 //! | [`discovery`] | The discovery file, where running instances with their server on say how to reach them |
 //! | [`jsonrpc`] | JSON-RPC 2.0 messages |
+//! | [`toon`] | An encoder for TOON, which tool results can be written in where they hold a long table |
 //! | [`base64`] | Base64, which MCP carries audio, images and binary resources in |
 //!
 //! # Where commands run
@@ -112,8 +113,10 @@ pub mod jsonrpc;
 pub mod permission;
 mod server;
 pub mod stdio;
+pub mod toon;
 
 pub use server::{
     Call, ClientInfo, Credential, Media, Outcome, PROTOCOL_VERSIONS, Program, Question,
-    QuestionKind, STDIO_SESSION, Server, ServerInfo, Session, ToolOutcome, tool_definition,
+    QuestionKind, ResultFormat, STDIO_SESSION, Server, ServerInfo, Session, ToolOutcome,
+    tool_definition,
 };

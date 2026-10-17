@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::jsonrpc::{self, Message, code};
 use crate::permission::{Mode, class_names};
+use crate::toon;
 
 /// The protocol versions this server speaks, newest first. A client asking
 /// for another gets the newest.
@@ -22,6 +23,19 @@ const STRUCTURED_FROM: &str = "2025-06-18";
 /// The first version with `audio` content blocks. Before it, audio goes in
 /// an embedded resource.
 const AUDIO_FROM: &str = "2025-03-26";
+
+/// How a tool result's text block is written. `structuredContent` is JSON
+/// either way.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ResultFormat {
+    /// Compact JSON.
+    #[default]
+    Json,
+    /// TOON, where a result holds a table of at least
+    /// [`toon::MIN_TABLE_ROWS`] rows and TOON is shorter; compact JSON
+    /// otherwise.
+    Toon,
+}
 
 /// The session ID a stdio server's one session has.
 pub const STDIO_SESSION: &str = "stdio";
@@ -371,6 +385,7 @@ struct Deferred<D> {
 #[derive(Debug)]
 pub struct Server<P: Program> {
     mode: Mode,
+    format: ResultFormat,
     program: P,
     sessions: BTreeMap<String, Session>,
     waiting: BTreeMap<u64, Waiting>,
@@ -391,6 +406,7 @@ impl<P: Program> Server<P> {
     pub fn new(mode: Mode, program: P) -> Self {
         Self {
             mode,
+            format: ResultFormat::default(),
             program,
             sessions: BTreeMap::new(),
             waiting: BTreeMap::new(),
@@ -400,6 +416,11 @@ impl<P: Program> Server<P> {
             deferred: BTreeMap::new(),
             answered: VecDeque::new(),
         }
+    }
+
+    /// Writes tool results' text blocks in `format`, compact JSON by default.
+    pub fn set_result_format(&mut self, format: ResultFormat) {
+        self.format = format;
     }
 
     /// Where the agent interface runs.
@@ -502,10 +523,22 @@ impl<P: Program> Server<P> {
         let structured = protocol.as_deref().is_none_or(|v| v >= STRUCTURED_FROM);
         let name = self.program.info().name;
         let body = match finish(asked) {
-            Ok((value, media)) => {
-                tool_result(Ok(value), structured, &media, protocol.as_deref(), &name)
-            }
-            Err(message) => tool_result(Err(message), structured, &[], protocol.as_deref(), &name),
+            Ok((value, media)) => tool_result(
+                Ok(value),
+                self.format,
+                structured,
+                &media,
+                protocol.as_deref(),
+                &name,
+            ),
+            Err(message) => tool_result(
+                Err(message),
+                self.format,
+                structured,
+                &[],
+                protocol.as_deref(),
+                &name,
+            ),
         };
         self.answered.push_back((
             ticket,
@@ -774,11 +807,25 @@ impl<P: Program> Server<P> {
             ))),
             Ok(ToolOutcome::Done(result)) => reply(
                 id,
-                tool_result(result, structured, &[], protocol.as_deref(), &server),
+                tool_result(
+                    result,
+                    self.format,
+                    structured,
+                    &[],
+                    protocol.as_deref(),
+                    &server,
+                ),
             ),
             Ok(ToolOutcome::WithMedia(result, media)) => reply(
                 id,
-                tool_result(Ok(result), structured, &media, protocol.as_deref(), &server),
+                tool_result(
+                    Ok(result),
+                    self.format,
+                    structured,
+                    &media,
+                    protocol.as_deref(),
+                    &server,
+                ),
             ),
             Ok(ToolOutcome::Defer(asked)) => {
                 self.next_ticket += 1;
@@ -915,6 +962,7 @@ impl<P: Program> Server<P> {
                                 "the person declined to let you run this ({name}). Nothing \
                                  changed. Ask them before trying it again."
                             )),
+                            self.format,
                             structured,
                             &[],
                             None,
@@ -1001,11 +1049,13 @@ fn media_block(media: &Media, protocol: Option<&str>, server: &str) -> Value {
     })
 }
 
-/// A tool's result as MCP carries it: the JSON as text for every client,
-/// and as structured content for clients that read it, then any audio or
-/// images, as blocks a client of `protocol` reads.
+/// A tool's result as MCP carries it: the value as text for every client
+/// (compact JSON, or TOON where `format` asks for it and it's a table worth
+/// writing so), and as structured content for clients that read it, then
+/// any audio or images, as blocks a client of `protocol` reads.
 fn tool_result(
     result: Result<Value, String>,
+    format: ResultFormat,
     structured: bool,
     media: &[Media],
     protocol: Option<&str>,
@@ -1013,7 +1063,13 @@ fn tool_result(
 ) -> Value {
     match result {
         Ok(value) => {
-            let text = value.to_string();
+            let mut text = value.to_string();
+            if format == ResultFormat::Toon {
+                let toon = toon::encode(&value);
+                if toon.longest_table >= toon::MIN_TABLE_ROWS && toon.text.len() < text.len() {
+                    text = toon.text;
+                }
+            }
             let mut content = vec![json!({ "type": "text", "text": text })];
             content.extend(media.iter().map(|m| media_block(m, protocol, server)));
             let mut result = json!({
@@ -1075,12 +1131,33 @@ mod tests {
 
     #[test]
     fn results_are_text_and_structured_content() {
-        let result = tool_result(Ok(json!({ "a": 1 })), true, &[], None, "demo");
+        let result = tool_result(
+            Ok(json!({ "a": 1 })),
+            ResultFormat::Json,
+            true,
+            &[],
+            None,
+            "demo",
+        );
         assert_eq!(result["structuredContent"]["a"], 1);
         assert_eq!(result["isError"], false);
-        let plain = tool_result(Ok(json!({ "a": 1 })), false, &[], None, "demo");
+        let plain = tool_result(
+            Ok(json!({ "a": 1 })),
+            ResultFormat::Json,
+            false,
+            &[],
+            None,
+            "demo",
+        );
         assert!(plain.get("structuredContent").is_none());
-        let failed = tool_result(Err("no".to_owned()), true, &[], None, "demo");
+        let failed = tool_result(
+            Err("no".to_owned()),
+            ResultFormat::Json,
+            true,
+            &[],
+            None,
+            "demo",
+        );
         assert_eq!(failed["isError"], true);
         assert_eq!(failed["content"][0]["text"], "no");
     }
