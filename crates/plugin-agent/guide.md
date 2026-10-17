@@ -45,7 +45,7 @@ If the host is playing automation on a parameter, the automation may move it bac
 
 ## Hearing what you've done
 
-`preview` never touches the instance the host plays: it renders a separate copy, set as this one is, offline. Give an instrument `notes` (each a `key`, where 60 is middle C and 69 is A4 at 440 Hz, a `start` and `length` in seconds, and a `velocity` from 0 to 1); give an effect an `input` (a sine, sweep, noise, impulse or silence). The analysis reports the peak and RMS level, the pitch and its nearest note, the spectrum in octave bands with its centroid, and when the sound starts, peaks and dies away.
+`preview` never touches the instance the host plays: it renders a separate copy, set as this one is, offline. Give an instrument `notes` (each a `key`, where 60 is middle C and 69 is A4 at 440 Hz, a `start` and `length` in seconds, and a `velocity` from 0 to 1); give an effect an `input` (a sine, sweep, noise, impulse or silence). The analysis reports the peak and RMS level, the pitch and its nearest note, the spectrum in octave bands with its centroid and how the centroid moves through the sound, the stereo width and the channels' correlation, and when the sound starts, peaks and dies away.
 
 Listen after each meaningful change, and compare against a checkpoint when you're unsure a change helped.
 

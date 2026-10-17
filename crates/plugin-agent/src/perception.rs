@@ -23,6 +23,10 @@ use serde_json::{Value, json};
 
 /// The longest preview, in seconds.
 pub const MAX_SECONDS: f64 = 10.0;
+/// How many slices of a sound the spectrum's movement is read in.
+const MOVEMENT_SLICES: usize = 4;
+/// The shortest slice, in samples, that has a spectrum worth a centroid.
+const MIN_SLICE: usize = 2_048;
 /// The block size previews render in.
 const BLOCK: usize = 512;
 
@@ -294,6 +298,44 @@ fn db_text(db: f64) -> String {
     }
 }
 
+/// The spectral centroid, in hertz, of each of [`MOVEMENT_SLICES`] equal
+/// slices of the sound from `onset` to `end` (seconds): how the spectrum
+/// moves. Empty if the sound is too short for its slices to have a
+/// spectrum, or a slice is silent.
+fn centroid_movement(mono: &[f32], rate: f64, onset: f64, end: f64) -> Vec<f64> {
+    let from = (onset * rate) as usize;
+    let to = ((end * rate) as usize).min(mono.len());
+    let slice = to.saturating_sub(from) / MOVEMENT_SLICES;
+    if slice < MIN_SLICE {
+        return Vec::new();
+    }
+    (0..MOVEMENT_SLICES)
+        .map(|i| measure::centroid(&mono[from + i * slice..from + (i + 1) * slice], rate))
+        .collect::<Option<_>>()
+        .unwrap_or_default()
+}
+
+/// How wide the stereo image is, and how alike the channels are, or `None`
+/// for one channel: the share of the energy that is side (left minus
+/// right) rather than mid, from 0 for mono to 1 for opposite channels, and
+/// the channels' correlation from −1 to 1.
+fn stereo_width(output: &Output) -> Option<(f64, f64)> {
+    let [left, right, ..] = output.channels.as_slice() else {
+        return None;
+    };
+    let (mut mid, mut side, mut ll, mut rr, mut lr) = (0.0, 0.0, 0.0, 0.0, 0.0);
+    for (&l, &r) in left.iter().zip(right) {
+        let (l, r) = (f64::from(l), f64::from(r));
+        mid += (l + r) * (l + r) / 4.0;
+        side += (l - r) * (l - r) / 4.0;
+        (ll, rr, lr) = (ll + l * l, rr + r * r, lr + l * r);
+    }
+    let total = mid + side;
+    let norm = (ll * rr).sqrt();
+    // A silent channel correlates with nothing.
+    (total > 0.0).then(|| (side / total, if norm > 0.0 { lr / norm } else { 0.0 }))
+}
+
 /// The analysis of a preview, as numbers and a summary in prose.
 pub fn analyse(output: &Output, last_note_end: Option<f64>) -> Value {
     let rate = output.sample_rate;
@@ -353,6 +395,27 @@ pub fn analyse(output: &Output, last_note_end: Option<f64>) -> Value {
             db_text(loudest.level_db)
         ));
     }
+    let movement = centroid_movement(&mono, rate, envelope.onset, envelope.end);
+    if let [first, .., last] = movement.as_slice() {
+        summary.push(format!(
+            "The spectrum {}: its centroid goes from {first:.0} Hz to {last:.0} Hz.",
+            match last / first {
+                r if r > 1.25 => "brightens",
+                r if r < 0.8 => "darkens",
+                _ => "stays about as bright",
+            }
+        ));
+    }
+    let stereo = stereo_width(output);
+    summary.push(match stereo {
+        Some((width, _)) if width < 0.01 => {
+            "The two channels are identical (no stereo width).".to_owned()
+        }
+        Some((width, correlation)) => format!(
+            "Stereo width {width:.2} (0 is mono, 1 is wide), channel correlation {correlation:.2}."
+        ),
+        None => "It's mono.".to_owned(),
+    });
     let release = last_note_end
         .filter(|end| envelope.end > *end)
         .map(|end| envelope.end - end);
@@ -378,7 +441,12 @@ pub fn analyse(output: &Output, last_note_end: Option<f64>) -> Value {
                 .iter()
                 .map(|b| json!({ "hz": b.centre, "dbfs": decibels(b.level_db) }))
                 .collect::<Vec<_>>(),
+            "centroid_over_time_hz": movement.iter().map(|c| c.round()).collect::<Vec<_>>(),
         },
+        "stereo": stereo.map(|(width, correlation)| json!({
+            "width": (width * 100.0).round() / 100.0,
+            "correlation": (correlation * 100.0).round() / 100.0,
+        })),
         "envelope": {
             "onset_s": envelope.onset,
             "attack_end_s": envelope.peak,
@@ -401,6 +469,39 @@ mod tests {
         assert_eq!(name, "C4");
         assert!(cents.abs() < 1.0);
         assert_eq!(note_name(27.5).0, "A0");
+    }
+
+    #[test]
+    fn stereo_width_and_the_spectrums_movement_are_read() {
+        let rate = 48_000.0;
+        // A sweep from low to high: the centroid rises through the sound.
+        let sweep: Vec<f32> = (0..96_000)
+            .map(|i| {
+                let t = f64::from(i) / rate;
+                (std::f64::consts::TAU * (200.0 * t + 1_900.0 * t * t)).sin() as f32 * 0.5
+            })
+            .collect();
+        let opposite: Vec<f32> = sweep.iter().map(|s| -0.5 * s).collect();
+        let mono = analyse(&Output::new(rate, vec![sweep.clone(), sweep.clone()]), None);
+        assert_eq!(mono["stereo"]["width"], 0.0);
+        assert_eq!(mono["stereo"]["correlation"], 1.0);
+        let rising = mono["spectrum"]["centroid_over_time_hz"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rising.len(), MOVEMENT_SLICES);
+        assert!(
+            rising.windows(2).all(|w| w[0].as_f64() < w[1].as_f64()),
+            "{rising:?}"
+        );
+        let text = mono["summary"].as_str().unwrap();
+        assert!(text.contains("The spectrum brightens"), "{text}");
+        assert!(text.contains("no stereo width"), "{text}");
+        let wide = analyse(&Output::new(rate, vec![sweep.clone(), opposite]), None);
+        assert_eq!(wide["stereo"]["width"], 0.9);
+        assert_eq!(wide["stereo"]["correlation"], -1.0);
+        let single = analyse(&Output::new(rate, vec![sweep]), None);
+        assert!(single["stereo"].is_null());
+        assert!(single["summary"].as_str().unwrap().contains("It's mono."));
     }
 
     #[test]

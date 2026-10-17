@@ -295,6 +295,15 @@ pub trait Program {
     /// with the ticket [`Server::finish_deferred`] answers it with.
     fn defer(&mut self, _ticket: u64, _deferred: &Self::Deferred) {}
 
+    /// Waits until the host has answered the deferred call `ticket`, and
+    /// gives its result. A headless transport calls it, since nothing else
+    /// runs the host's side while it reads; a program whose deferred calls
+    /// finish on a thread of their own blocks here until that thread does.
+    /// `None` (the default) if there's nothing to wait for.
+    fn await_deferred(&mut self, _ticket: u64) -> Option<Result<(Value, Vec<Media>), String>> {
+        None
+    }
+
     /// Whether the person allows the agent called `agent`.
     fn allows(&self, host: &Self::Host, agent: &str) -> bool;
 

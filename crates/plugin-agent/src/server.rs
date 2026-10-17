@@ -48,7 +48,7 @@ impl<P: Plugin> Agent<P> {
         // again. Commands that ask first still ask, through the tools.
         let server = Server::new(
             Mode::Headless { autonomous: false },
-            Tools::new(host.clone()),
+            Tools::new(host.clone(), Mode::App, "the plug-in"),
         );
         Self {
             host,
