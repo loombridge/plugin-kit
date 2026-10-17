@@ -9,8 +9,8 @@ use lspk_agent::client::{Client, Http, InProcess, Transport};
 use lspk_agent::http::{Endpoint, HttpConfig, HttpServer, Served, resume, serve};
 use lspk_agent::permission::{Decision, Mode, Rules, decide, permit};
 use lspk_agent::{
-    Call, Credential, Media, Outcome, Program, QuestionKind, Server, ServerInfo, ToolOutcome,
-    tool_definition,
+    Call, Credential, Media, Outcome, Program, QuestionKind, ResultFormat, Server, ServerInfo,
+    ToolOutcome, tool_definition,
 };
 use lspk_commands::Permission;
 use serde_json::{Value, json};
@@ -105,6 +105,14 @@ impl Program for Toy {
                 ToolOutcome::Done(Ok(json!({ "db": 0.0 })))
             }
             "snapshot" => ToolOutcome::Defer("picture"),
+            "rows" => {
+                let count = args["count"].as_u64().unwrap_or_default();
+                let notes: Vec<Value> = (0..count)
+                    .map(|i| json!({ "key": 60 + i, "start": i, "velocity": 100 }))
+                    .collect();
+                ToolOutcome::Done(Ok(json!({ "notes": notes })))
+            }
+            "deep" => ToolOutcome::Done(Ok(json!({ "a": { "b": { "c": [1, [2]] } } }))),
             "sound" => ToolOutcome::WithMedia(
                 json!({ "seconds": 1 }),
                 vec![Media {
@@ -193,6 +201,46 @@ fn a_headless_server_runs_tools_and_refuses_what_asks_first() {
     let mut free = headless(true);
     free.initialize("test").unwrap();
     assert!(!free.call("reset", json!({})).unwrap().is_error);
+}
+
+#[test]
+fn toon_is_the_text_of_a_long_table_only() {
+    let mut server = Server::new(Mode::Headless { autonomous: false }, Toy::default());
+    server.set_result_format(ResultFormat::Toon);
+    let mut client = Client::new(InProcess::new(server, Host::default()));
+    client.initialize("test").unwrap();
+
+    // Eight rows or more, and shorter: TOON, with `structuredContent` still JSON.
+    let long = client.call("rows", json!({ "count": 8 })).unwrap();
+    assert!(
+        long.text
+            .starts_with("notes[8]{key,start,velocity}:\n  60,0,100\n  61,1,100"),
+        "{}",
+        long.text
+    );
+    assert_eq!(long.structured.unwrap()["notes"][7]["key"], 67);
+
+    // A short table, a result with no table, and a plain result stay compact JSON.
+    for (tool, args) in [
+        ("rows", json!({ "count": 7 })),
+        ("deep", json!({})),
+        ("set_gain", json!({ "db": -3.0 })),
+    ] {
+        let result = client.call(tool, args).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&result.text).unwrap(),
+            result.structured.unwrap(),
+            "{tool}"
+        );
+    }
+
+    // The default, and an error, are untouched.
+    let mut json_client = headless(false);
+    json_client.initialize("test").unwrap();
+    let long = json_client.call("rows", json!({ "count": 8 })).unwrap();
+    assert!(long.text.starts_with("{\"notes\":[{"), "{}", long.text);
+    let error = client.call("reset", json!({})).unwrap();
+    assert!(error.is_error);
 }
 
 #[test]
