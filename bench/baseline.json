@@ -256,6 +256,8 @@
     "lspk-mod/audio-64x32": 10295533,
     "lspk-mod/empty-32": 100,
     "lspk-mod/mixed-64x32": 916205,
+    "lspk-test/features/distance": 1621,
+    "lspk-test/features/extract": 81400200,
     "lspk-ui/animated-second": 9460355,
     "lspk-ui/idle-second": 1186,
     "lspk-voice/allocation/heavy-traffic": 197562,
