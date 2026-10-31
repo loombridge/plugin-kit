@@ -61,5 +61,11 @@ vst3 = { version = "=0.3.0", optional = true }
 lspk-commands.workspace = true
 schemars = { version = "=1.2.2", default-features = false, features = ["std", "derive"] }
 
+# Micro-benchmarks for the hot paths, run by `cargo xtask bench` (timing) and
+# counted by its instruction-count gate.
+[[bench]]
+name = "perf"
+harness = false
+
 [lints]
 workspace = true
