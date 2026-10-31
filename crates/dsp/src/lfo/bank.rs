@@ -127,6 +127,23 @@ impl LfoBank {
         &mut self.voices[v]
     }
 
+    /// Voice `v`'s phase (the shared state's when the slot is shared), as
+    /// [`Lfo::phase`] says. Call it after [`process`](Self::process), with
+    /// the transport advanced past the block.
+    ///
+    /// # Panics
+    ///
+    /// If there's no voice `v`.
+    #[must_use]
+    pub fn phase(&self, v: usize, transport: &Transport) -> f32 {
+        let state = if self.lfo.settings.shared {
+            &self.shared
+        } else {
+            &self.voices[v]
+        };
+        self.lfo.phase(state, transport)
+    }
+
     /// The shared state, played for every voice when the slot is shared.
     pub fn shared_mut(&mut self) -> &mut LfoVoice {
         &mut self.shared

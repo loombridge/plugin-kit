@@ -7,6 +7,7 @@
 //! | Module | What it holds |
 //! |---|---|
 //! | [`smooth`] | Parameter smoothing, from `lspk-params` |
+//! | [`analyser`] | A scope and a spectrum of the last samples played, for an interface to draw |
 //! | [`envelope`] | Envelopes with delay, attack, hold, decay, sustain and release, bendable curves, tempo sync, legato and steal restarts, one voice or many in SIMD lanes |
 //! | [`lfo`] | LFOs: drawn shapes, an XY path, chaos and sample and hold, per voice or shared, with a SIMD path across voices |
 //! | [`oversample`] | Oversampling by 2, 4 or 8 for nonlinear processes |
@@ -18,6 +19,7 @@
 //! micro-benchmark in `benches/perf.rs`, which the instruction-count gate
 //! covers.
 
+pub mod analyser;
 pub mod envelope;
 pub mod filter;
 pub mod lfo;
@@ -26,6 +28,7 @@ pub mod simd;
 /// Parameter smoothing, from the plug-in kit's `lspk-params`.
 pub use lspk_params::smooth;
 
+pub use analyser::Analyser;
 pub use envelope::{Envelope, EnvelopeBank, EnvelopeParams};
 pub use filter::{FilterBank, FilterGroup, FilterType, VoiceParams};
 pub use oversample::Oversampler;

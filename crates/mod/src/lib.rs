@@ -13,6 +13,7 @@
 //! | [`program`] | The compiled matrix |
 //! | [`engine`] | The engine that runs it on the audio thread |
 //! | [`mailbox`](mod@mailbox) | Handing compiled programs to the audio thread |
+//! | [`telemetry`] | The engine's live values for an interface, published while an editor is open |
 //!
 //! Rules cited as "engine-core Rn" are the plug-in kit's engine
 //! specification, section 11 (velocity and note curves) and 12
@@ -99,6 +100,7 @@ pub mod mailbox;
 pub mod matrix;
 pub mod program;
 pub mod source;
+pub mod telemetry;
 
 #[cfg(test)]
 mod tests;
