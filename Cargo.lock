@@ -1484,6 +1484,7 @@ dependencies = [
  "egui-baseview",
  "lspk-params",
  "lspk-plugin",
+ "lspk-plugin-agent",
  "lspk-rt",
  "lspk-ui",
  "midir",
@@ -1532,11 +1533,14 @@ dependencies = [
  "clack-host",
  "egui",
  "egui-baseview",
+ "lspk-commands",
  "lspk-params",
  "lspk-plugin",
+ "lspk-plugin-agent",
  "objc2 0.6.5",
  "raw-window-handle",
  "rtrb",
+ "serde_json",
  "windows-sys 0.61.2",
 ]
 

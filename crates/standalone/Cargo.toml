@@ -67,6 +67,9 @@ windows-sys = { version = "0.61.2", features = [
 
 [dev-dependencies]
 lspk-rt.workspace = true
+# The plug-in the editor test drives has the kit's `params.set`, which an
+# editor's value changes run.
+lspk-plugin-agent.workspace = true
 
 [lints]
 workspace = true

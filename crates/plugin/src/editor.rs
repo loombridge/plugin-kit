@@ -41,6 +41,18 @@
 //! parameter change goes to the host as a gesture, so it records automation
 //! and undo exactly as for a person moving a control in its own interface.
 //!
+//! # Commands
+//!
+//! An editor changes nothing itself: every change it makes is a registered
+//! command, run on the main thread through the plug-in's own registry, the
+//! path an agent's command takes ([`EditorContext::run_command`]). A
+//! parameter edit is the kit's `params.set` command (the plug-in exports
+//! through `lspk_plugin_agent::WithAgent`, which registers it), run inside
+//! the gesture the editor holds open, so the host hears one begin, each
+//! value and one end, as it always has. A value the editor sets is
+//! therefore in [`EditorContext::values`] once the main thread has run the
+//! command, not before.
+//!
 //! # The keyboard
 //!
 //! An editor also tells its host where it stands with the keyboard
@@ -54,15 +66,21 @@ use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::fmt;
 use std::ptr::NonNull;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 
+use lspk_commands::Registry;
 use lspk_params::ParamId;
+use serde_json::{Value, json};
 
-use crate::PluginError;
 use crate::host::{EditError, Host};
 use crate::params::ParamValues;
+use crate::{Plugin, PluginError, agent_commands};
+
+/// The kit's command that sets parameters, which an editor's value changes
+/// run: `lspk-plugin-agent` registers it, with the agent interface.
+const SET_PARAMS: &str = "params.set";
 
 /// A window system an editor can open in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -275,22 +293,24 @@ pub trait EditorHost: Send + Sync + 'static {
     }
 }
 
-/// One change an editor makes to a parameter, on its way to the main
-/// thread.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// One change an editor makes, on its way to the main thread.
+#[derive(Clone, Debug, PartialEq)]
 enum Change {
     Begin(ParamId),
-    Value(ParamId, f64),
     End(ParamId),
+    Command {
+        id: String,
+        args: Value,
+        undo_label: String,
+    },
 }
 
 /// An open editor's link to the plug-in and its host. It may be cloned and
 /// sent to the editor's window thread; every method may be called from any
 /// thread.
 ///
-/// Parameter changes are recorded at once, so the editor draws them
-/// straight away, and reach the host as gestures from the main thread,
-/// where the kit passes them to [`Host`].
+/// Every change reaches the plug-in as a command, and the host as gestures,
+/// from the main thread, where the kit runs them ([`EditorChanges`]).
 #[derive(Clone)]
 pub struct EditorContext {
     inner: Arc<ContextInner>,
@@ -301,6 +321,8 @@ struct ContextInner {
     changes: Sender<Change>,
     host: Box<dyn EditorHost>,
     closed: AtomicBool,
+    /// Why the last command the editor ran failed, until taken.
+    failure: Arc<Mutex<Option<String>>>,
 }
 
 impl EditorContext {
@@ -310,12 +332,14 @@ impl EditorContext {
     #[must_use]
     pub fn new(values: Arc<ParamValues>, host: Box<dyn EditorHost>) -> (Self, EditorChanges) {
         let (changes, receiver) = channel();
+        let failure = Arc::new(Mutex::new(None));
         let cx = Self {
             inner: Arc::new(ContextInner {
                 values,
                 changes,
                 host,
                 closed: AtomicBool::new(false),
+                failure: failure.clone(),
             }),
         };
         (
@@ -323,6 +347,8 @@ impl EditorContext {
             EditorChanges {
                 receiver,
                 waiting: VecDeque::new(),
+                registry: None,
+                failure,
             },
         )
     }
@@ -347,20 +373,27 @@ impl EditorContext {
         Ok(())
     }
 
-    /// Sets parameter `id` to `value`, in its own units, clamped to its
-    /// range, during a gesture, and returns the value it took.
+    /// Sets parameter `id` to `value`, in its own units as `params.get`
+    /// gives them (clamped to its range), during a gesture: the command
+    /// `params.set`, run on the main thread, inside the gesture
+    /// [`begin_edit`](Self::begin_edit) opened.
     ///
     /// # Errors
     ///
     /// There's no parameter `id`.
-    pub fn set_param(&self, id: ParamId, value: f64) -> Result<f64, EditError> {
-        let value = self
+    pub fn set_param(&self, id: ParamId, value: f64) -> Result<(), EditError> {
+        self.check(id)?;
+        let name = self
             .inner
             .values
-            .set(id, value)
-            .ok_or(EditError::UnknownParam(id))?;
-        self.send(Change::Value(id, value));
-        Ok(value)
+            .view(id)
+            .map_or_else(String::new, |v| v.name);
+        self.run_command(
+            SET_PARAMS,
+            json!({ "values": [{ "param": id.0, "value": value }] }),
+            format!("Set {name}"),
+        );
+        Ok(())
     }
 
     /// Ends the gesture [`begin_edit`](Self::begin_edit) started.
@@ -375,23 +408,36 @@ impl EditorContext {
     }
 
     /// Sets parameter `id` to `value` in one gesture (begin, value, end),
-    /// as a typed value, a key press or a double-click does, and returns
-    /// the value it took.
+    /// as a typed value, a key press or a double-click does: `params.set`
+    /// outside any gesture of the editor's.
     ///
     /// # Errors
     ///
     /// There's no parameter `id`.
-    pub fn edit(&self, id: ParamId, value: f64) -> Result<f64, EditError> {
-        self.check(id)?;
-        let value = self
-            .inner
-            .values
-            .set(id, value)
-            .ok_or(EditError::UnknownParam(id))?;
-        self.send(Change::Begin(id));
-        self.send(Change::Value(id, value));
-        self.send(Change::End(id));
-        Ok(value)
+    pub fn edit(&self, id: ParamId, value: f64) -> Result<(), EditError> {
+        self.set_param(id, value)
+    }
+
+    /// Runs the registered command `id` with `args`, on the main thread,
+    /// through the plug-in's own registry: the path an agent's command
+    /// takes, checked against the command's schema. `undo_label` names the
+    /// step for the plug-in's undo history
+    /// ([`Plugin::run_command_labelled`]). It returns at once; if the
+    /// command fails, [`take_command_error`](Self::take_command_error) says
+    /// why.
+    pub fn run_command(&self, id: &str, args: Value, undo_label: impl Into<String>) {
+        self.send(Change::Command {
+            id: id.to_owned(),
+            args,
+            undo_label: undo_label.into(),
+        });
+    }
+
+    /// Why the last command the editor ran failed, if one has since this
+    /// was last called.
+    #[must_use]
+    pub fn take_command_error(&self) -> Option<String> {
+        self.inner.failure.lock().ok()?.take()
     }
 
     /// Asks the host to resize the window holding the editor to `size`, in
@@ -471,26 +517,43 @@ impl fmt::Debug for EditorContext {
     }
 }
 
-/// The main thread's end of an editor's parameter changes, which a format's
-/// adapter passes to the plug-in's [`Host`] in its main-thread callback.
+/// The main thread's end of an editor's changes, which a format's adapter
+/// runs in its main-thread callback: commands through the plug-in's
+/// registry, gestures through the plug-in's [`Host`].
 pub struct EditorChanges {
     receiver: Receiver<Change>,
     /// Changes the host's queue had no room for yet, oldest first.
     waiting: VecDeque<Change>,
+    /// The plug-in's commands, listed on the first command run: a
+    /// plug-in's registry doesn't change while it runs.
+    registry: Option<Registry>,
+    failure: Arc<Mutex<Option<String>>>,
 }
 
 impl EditorChanges {
-    /// Passes every change waiting to `host`, as gestures the host hears.
-    /// Changes the plug-in has no room for yet stay, in order, for the
-    /// next call; returns how many it passed.
-    pub fn apply(&mut self, host: &Host) -> usize {
+    /// Runs every change waiting: the editor's commands as `plugin` runs
+    /// its own, and its gestures as gestures `host` passes on. Changes the
+    /// plug-in has no room for yet stay, in order, for the next call;
+    /// returns how many it ran.
+    pub fn apply(&mut self, host: &Host, plugin: &mut impl Plugin) -> usize {
         self.waiting.extend(self.receiver.try_iter());
         let mut passed = 0;
-        while let Some(&change) = self.waiting.front() {
+        while let Some(change) = self.waiting.front().cloned() {
             let result = match change {
                 Change::Begin(id) => host.begin_edit(id),
-                Change::Value(id, value) => host.set_param(id, value),
                 Change::End(id) => host.end_edit(id),
+                Change::Command {
+                    id,
+                    args,
+                    undo_label,
+                } => {
+                    if let Err(why) = self.run(plugin, &id, &args, &undo_label) {
+                        if let Ok(mut failure) = self.failure.lock() {
+                            *failure = Some(why);
+                        }
+                    }
+                    Ok(())
+                }
             };
             match result {
                 Err(EditError::QueueFull | EditError::NotReady) => break,
@@ -510,6 +573,31 @@ impl EditorChanges {
         self.waiting.extend(self.receiver.try_iter());
         self.waiting.is_empty()
     }
+
+    /// Runs command `id` as an agent's runs: it must be in the plug-in's
+    /// registry, and `args` must fit its schema.
+    fn run(
+        &mut self,
+        plugin: &mut impl Plugin,
+        id: &str,
+        args: &Value,
+        undo_label: &str,
+    ) -> Result<(), String> {
+        if self.registry.is_none() {
+            let mut registry = Registry::new();
+            plugin
+                .register_commands(&mut registry)
+                .map_err(|e| e.to_string())?;
+            self.registry = Some(registry);
+        }
+        let registry = self.registry.as_ref().expect("listed above");
+        agent_commands::run_checked(registry, id, args, |id, args| {
+            plugin
+                .run_command_labelled(id, args, undo_label)
+                .map_err(|e| e.message().to_owned())
+        })
+        .map(drop)
+    }
 }
 
 impl fmt::Debug for EditorChanges {
@@ -524,6 +612,11 @@ impl fmt::Debug for EditorChanges {
 mod tests {
     use super::*;
     use crate::host::{Edit, HostBackend};
+    use crate::{
+        AudioLayout, Buffers, Events, PluginInfo, ProcessConfig, ProcessContext, ProcessStatus,
+        Processor,
+    };
+    use lspk_commands::{CommandSpec, Context, Permission, RegisterError};
     use lspk_params::ParamDescriptor;
     use std::sync::atomic::AtomicU32;
 
@@ -577,43 +670,148 @@ mod tests {
         )
     }
 
-    #[test]
-    fn an_editors_changes_reach_the_host_as_gestures() {
+    /// A plug-in with the one command an editor's value changes run, as
+    /// `lspk-plugin-agent` registers it, and one of its own; it keeps the
+    /// labels it was run under.
+    struct Settable {
+        host: Host,
+        labels: Vec<String>,
+    }
+
+    struct Silent;
+
+    impl Processor for Silent {
+        fn process(
+            &mut self,
+            _audio: &mut Buffers<'_>,
+            _events: &Events<'_>,
+            _cx: &mut ProcessContext<'_>,
+        ) -> ProcessStatus {
+            ProcessStatus::Continue
+        }
+
+        fn flush(&mut self, _events: &Events<'_>, _cx: &mut ProcessContext<'_>) {}
+    }
+
+    impl Plugin for Settable {
+        type Processor = Silent;
+
+        const INFO: PluginInfo = PluginInfo::new("com.loombridge.test.settable", "Settable")
+            .audio(AudioLayout::effect(2));
+
+        fn new(host: Host) -> Self {
+            Self {
+                host,
+                labels: Vec::new(),
+            }
+        }
+
+        fn activate(
+            &mut self,
+            _config: &ProcessConfig,
+            _values: &ParamValues,
+        ) -> Result<Silent, PluginError> {
+            Ok(Silent)
+        }
+
+        fn register_commands(&self, registry: &mut Registry) -> Result<(), RegisterError> {
+            for id in [SET_PARAMS, "test.fails"] {
+                registry.register(
+                    CommandSpec::new(id, id)
+                        .description("A test command.")
+                        .permission(Permission::Edit)
+                        .context(Context::Global),
+                )?;
+            }
+            Ok(())
+        }
+
+        fn run_command(&mut self, id: &str, args: &Value) -> Result<Value, PluginError> {
+            if id != SET_PARAMS {
+                return Err(PluginError::new("it failed"));
+            }
+            let set = &args["values"][0];
+            let param = ParamId(set["param"].as_u64().expect("an ID") as u32);
+            let value = set["value"].as_f64().expect("a value");
+            // As `lspk-plugin-agent`'s edits: a gesture around the value.
+            self.host
+                .begin_edit(param)
+                .map_err(|e| PluginError::new(e.to_string()))?;
+            self.host
+                .set_param(param, value)
+                .map_err(|e| PluginError::new(e.to_string()))?;
+            self.host
+                .end_edit(param)
+                .map_err(|e| PluginError::new(e.to_string()))?;
+            Ok(Value::Null)
+        }
+
+        fn run_command_labelled(
+            &mut self,
+            id: &str,
+            args: &Value,
+            undo_label: &str,
+        ) -> Result<Value, PluginError> {
+            self.labels.push(undo_label.to_owned());
+            self.run_command(id, args)
+        }
+    }
+
+    /// An editor's context, the plug-in it edits and the queue it reaches
+    /// the host through.
+    fn rig() -> (
+        EditorContext,
+        EditorChanges,
+        Host,
+        Settable,
+        rtrb::Consumer<Edit>,
+        Arc<Calls>,
+    ) {
         let values = values();
         let calls = Arc::new(Calls::default());
-        let (cx, mut changes) =
-            EditorContext::new(values.clone(), Box::new(Recorder(calls.clone())));
+        let (cx, changes) = EditorContext::new(values.clone(), Box::new(Recorder(calls.clone())));
         let host = Host::new(Box::new(Quiet));
-        let mut edits = host.connect(values.clone());
+        let edits = host.connect(values);
+        let plugin = Settable::new(host.clone());
+        (cx, changes, host, plugin, edits, calls)
+    }
+
+    fn queued(edits: &mut rtrb::Consumer<Edit>) -> Vec<Edit> {
+        std::iter::from_fn(|| edits.pop().ok()).collect()
+    }
+
+    #[test]
+    fn an_editors_changes_reach_the_host_as_gestures() {
+        let (cx, mut changes, host, mut plugin, mut edits, calls) = rig();
 
         // A drag, from another thread, as on X11.
         let drag = cx.clone();
         std::thread::spawn(move || {
             drag.begin_edit(ParamId(1)).expect("a parameter");
-            assert_eq!(drag.set_param(ParamId(1), 0.5), Ok(0.5));
-            assert_eq!(
-                drag.set_param(ParamId(1), 99.0),
-                Ok(lspk_params::db_to_gain(6.0))
-            );
+            assert_eq!(drag.set_param(ParamId(1), 0.5), Ok(()));
+            assert_eq!(drag.set_param(ParamId(1), 99.0), Ok(()));
             drag.end_edit(ParamId(1)).expect("a parameter");
         })
         .join()
         .expect("the window thread");
-        // Recorded at once, for the editor to draw.
-        assert_eq!(values.get(ParamId(1)), Some(lspk_params::db_to_gain(6.0)));
-        assert_eq!(cx.edit(ParamId(2), 0.0), Ok(0.0));
+        // Nothing changes until the main thread runs the commands.
+        assert_eq!(cx.values().get(ParamId(1)), Some(1.0));
+        assert_eq!(cx.edit(ParamId(2), 0.0), Ok(()));
         assert_eq!(
             cx.edit(ParamId(9), 0.0),
             Err(EditError::UnknownParam(ParamId(9)))
         );
-        assert!(calls.callbacks.load(Ordering::Relaxed) >= 7);
+        assert!(calls.callbacks.load(Ordering::Relaxed) >= 5);
 
-        assert_eq!(changes.apply(&host), 7);
+        assert_eq!(changes.apply(&host, &mut plugin), 5);
         assert!(changes.is_empty());
-        let queued: Vec<Edit> = std::iter::from_fn(|| edits.pop().ok()).collect();
+        assert_eq!(cx.take_command_error(), None);
         let max = lspk_params::db_to_gain(6.0);
+        assert_eq!(cx.values().get(ParamId(1)), Some(max));
+        // The drag's gesture held, each value inside it; the lone edit its
+        // own gesture.
         assert_eq!(
-            queued,
+            queued(&mut edits),
             [
                 Edit::Begin(ParamId(1)),
                 Edit::Value {
@@ -636,6 +834,23 @@ mod tests {
                 Edit::End(ParamId(2)),
             ]
         );
+        assert_eq!(plugin.labels, ["Set Gain", "Set Gain", "Set On"]);
+    }
+
+    #[test]
+    fn a_command_runs_through_the_registry_and_says_why_it_failed() {
+        let (cx, mut changes, host, mut plugin, _edits, _calls) = rig();
+        cx.run_command("test.fails", serde_json::json!({}), "Fail");
+        cx.run_command("test.nothing", serde_json::json!({}), "Nothing");
+        assert_eq!(changes.apply(&host, &mut plugin), 2);
+        assert_eq!(
+            cx.take_command_error().as_deref(),
+            Some("the plug-in has no command `test.nothing`"),
+            "a command outside the registry never reaches the plug-in"
+        );
+        assert_eq!(cx.take_command_error(), None);
+        // The failing command ran, and its label with it.
+        assert_eq!(plugin.labels, ["Fail"]);
     }
 
     #[test]
@@ -644,11 +859,12 @@ mod tests {
         let (cx, mut changes) =
             EditorContext::new(values.clone(), Box::new(Recorder(Arc::default())));
         let host = Host::new(Box::new(Quiet));
+        let mut plugin = Settable::new(host.clone());
         // Not connected yet: nothing passes, nothing is lost.
-        cx.edit(ParamId(2), 0.0).expect("a parameter");
-        assert_eq!(changes.apply(&host), 0);
+        cx.begin_edit(ParamId(2)).expect("a parameter");
+        assert_eq!(changes.apply(&host, &mut plugin), 0);
         let _edits = host.connect(values);
-        assert_eq!(changes.apply(&host), 3);
+        assert_eq!(changes.apply(&host, &mut plugin), 1);
     }
 
     #[test]
@@ -657,7 +873,7 @@ mod tests {
         let (cx, mut changes) = EditorContext::new(values(), Box::new(Recorder(calls.clone())));
         cx.close();
         assert!(!cx.request_resize(EditorSize::new(10, 10)));
-        cx.edit(ParamId(1), 0.5).expect("still recorded");
+        cx.edit(ParamId(1), 0.5).expect("a parameter");
         cx.request_callback();
         assert!(changes.is_empty());
         assert_eq!(calls.callbacks.load(Ordering::Relaxed), 0);
