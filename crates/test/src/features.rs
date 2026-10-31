@@ -211,7 +211,7 @@ pub fn extract(output: &Output) -> Option<Features> {
     let hop = ((TRACK_HOP * rate) as usize).max(1);
     let count = active.len() / hop;
     let track_rate = rate / hop as f64;
-    let amplitude: Vec<f64> = (0..count)
+    let mut amplitude: Vec<f64> = (0..count)
         .map(|i| {
             let centre = from + i * hop + hop / 2;
             let half = (TRACK_WINDOW * rate / 2.0) as usize;
@@ -220,6 +220,12 @@ pub fn extract(output: &Output) -> Option<Features> {
             ))
         })
         .collect();
+    // A gap of digital silence is −∞ dB, which would turn the whole
+    // track's DFT into NaN: floor it as the envelope is floored.
+    let loudest = amplitude.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    for level in &mut amplitude {
+        *level = level.max(loudest - ENVELOPE_RANGE_DB);
+    }
     let amplitude_modulation = modulation(&amplitude, track_rate, MIN_AMPLITUDE_DEPTH);
     let brightness_modulation = brightness(&mono, &amplitude, from, hop, rate)
         .and_then(|track| modulation(&track, track_rate, MIN_BRIGHTNESS_DEPTH));
@@ -512,6 +518,23 @@ mod tests {
         }));
         assert!(distance(&tremolo, &steady) < distance(&steady, &faster));
         assert!(distance(&tremolo, &faster) > 0.0);
+    }
+
+    #[test]
+    fn a_gate_down_to_silence_is_read_as_amplitude_modulation() {
+        // Fully on and fully off eight times a second, as a trance gate.
+        let gated = mono(made(2.0, |t| {
+            let open = (t * 8.0).fract() < 0.5;
+            if open {
+                0.3 * (TAU * 440.0 * t).sin()
+            } else {
+                0.0
+            }
+        }));
+        let m = gated.amplitude_modulation.expect("a gate");
+        assert!((m.rate_hz - 8.0).abs() < 0.75, "{m:?}");
+        let steady = mono(sine(440.0, RATE, seconds(2.0), 0.3));
+        assert!(distance(&gated, &steady).is_finite());
     }
 
     #[test]
