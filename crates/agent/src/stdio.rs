@@ -83,7 +83,7 @@ pub fn serve_until<P: Program>(
             )),
             Ok(message) => match server.handle(host, STDIO_SESSION, message) {
                 Outcome::Reply(reply) => reply,
-                Outcome::Ask(question) => server.resolve(host, question.id, false),
+                Outcome::Ask(question) => reply_of(server.resolve(host, question.id, false)),
                 // Headless, no person's gesture is ever under way, so
                 // nothing waits for one to end; run it now if anything did.
                 // A call that waits for the host gets its answer first.
@@ -98,7 +98,9 @@ pub fn serve_until<P: Program>(
                         .filter(|(resumed, _)| *resumed == ticket)
                         .and_then(|(_, outcome)| match outcome {
                             Outcome::Reply(reply) => reply,
-                            Outcome::Ask(question) => server.resolve(host, question.id, false),
+                            Outcome::Ask(question) => {
+                                reply_of(server.resolve(host, question.id, false))
+                            }
                             Outcome::Wait(_) => None,
                         })
                 }
@@ -110,6 +112,14 @@ pub fn serve_until<P: Program>(
         if stop(host) {
             return Ok(());
         }
+    }
+}
+
+/// The reply to a question that was declined: a refusal never waits.
+fn reply_of(outcome: Option<Outcome>) -> Option<Value> {
+    match outcome {
+        Some(Outcome::Reply(reply)) => reply,
+        _ => None,
     }
 }
 

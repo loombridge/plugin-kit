@@ -235,10 +235,11 @@ impl<P: Plugin> Agent<P> {
         let Some(index) = running.pending.iter().position(|p| p.question().id == id) else {
             return false;
         };
-        running
+        let served = running
             .pending
             .remove(index)
             .finish(&mut self.server, plugin, allow);
+        keep(running, served);
         true
     }
 }

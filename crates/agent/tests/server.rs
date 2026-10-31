@@ -105,6 +105,17 @@ impl Program for Toy {
                 ToolOutcome::Done(Ok(json!({ "db": 0.0 })))
             }
             "snapshot" => ToolOutcome::Defer("picture"),
+            // Asks first, then waits for the host once it's allowed.
+            "export" => {
+                if let Err(outcome) =
+                    permit(&[Permission::Destructive], call.confirmed, decide, || {
+                        "Export (destructive)".to_owned()
+                    })
+                {
+                    return Ok(outcome);
+                }
+                ToolOutcome::Defer("file")
+            }
             "rows" => {
                 let count = args["count"].as_u64().unwrap_or_default();
                 let notes: Vec<Value> = (0..count)
@@ -316,6 +327,31 @@ fn a_token_speaks_for_its_agent() {
 }
 
 #[test]
+fn an_allowed_call_that_waits_for_the_host_is_answered_when_it_finishes() {
+    let mut server = Server::new(Mode::App, Toy::default());
+    let mut host = Host::default();
+    let session = server.open_session(None);
+    let Outcome::Ask(question) = server.handle(
+        &mut host,
+        &session,
+        json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "export", "arguments": {} } }),
+    ) else {
+        panic!("a destructive call asks first");
+    };
+    let Some(Outcome::Wait(ticket)) = server.resolve(&mut host, question.id, true) else {
+        panic!("the allowed call waits for the host, not fails");
+    };
+    assert_eq!(server.deferred(), [ticket]);
+    server.finish_deferred(ticket, |asked| Ok((json!({ "of": asked }), Vec::new())));
+    let (answered, Outcome::Reply(Some(reply))) = server.resume(&mut host).unwrap() else {
+        panic!("the host's answer comes back");
+    };
+    assert_eq!(answered, ticket);
+    assert_eq!(reply["result"]["structuredContent"]["of"], "file");
+}
+
+#[test]
 fn calls_and_events_wait_for_the_gesture_and_the_host() {
     let mut server = Server::new(Mode::Headless { autonomous: false }, Toy::default());
     let mut host = Host::default();
@@ -446,7 +482,11 @@ fn exchange<T: Send + 'static>(
         if let Some(job) = http.wait_job(Duration::from_millis(10)) {
             match serve(server, host, job) {
                 Served::Done => {}
-                Served::Waiting(pending) => pending.finish(server, host, allow),
+                Served::Waiting(pending) => {
+                    if let Served::Parked(waiting) = pending.finish(server, host, allow) {
+                        parked.push(waiting);
+                    }
+                }
                 Served::Parked(waiting) => parked.push(waiting),
             }
         }
