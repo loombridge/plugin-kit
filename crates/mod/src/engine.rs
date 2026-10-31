@@ -670,6 +670,11 @@ impl Engine {
             .take(self.program.by_dest.len())
             .enumerate()
         {
+            // Most destinations have no route: skip them without asking.
+            if self.program.by_dest[d].is_none() {
+                row.fill(f32::NAN);
+                continue;
+            }
             for (v, slot) in row.iter_mut().enumerate() {
                 *slot = if self.is_active(v) {
                     self.latest(DestId(d as u16), v).unwrap_or(f32::NAN)
