@@ -176,6 +176,13 @@ impl Host {
         self.inner.values.get().map(Arc::as_ref)
     }
 
+    /// The parameters' values now, shared, once the plug-in has described
+    /// them: what an off-screen editor draws from.
+    #[must_use]
+    pub fn values_shared(&self) -> Option<Arc<ParamValues>> {
+        self.inner.values.get().cloned()
+    }
+
     /// Parameter `id`'s value now.
     #[must_use]
     pub fn param(&self, id: ParamId) -> Option<f64> {

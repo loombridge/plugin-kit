@@ -22,6 +22,8 @@ const INVALID_ID: u32 = u32::MAX;
 pub struct ParamValues {
     descriptors: Box<[ParamDescriptor]>,
     values: Box<[AtomicU64]>,
+    /// How many times a value has changed ([`generation`](Self::generation)).
+    changes: AtomicU64,
     /// `(id, index)` sorted by ID.
     by_id: Box<[(ParamId, usize)]>,
     /// The plug-in's parameter space, if it has one.
@@ -65,6 +67,7 @@ impl ParamValues {
         Ok(Self {
             descriptors: descriptors.into_boxed_slice(),
             values,
+            changes: AtomicU64::new(0),
             by_id: by_id.into_boxed_slice(),
             space: None,
         })
@@ -223,8 +226,19 @@ impl ParamValues {
     pub fn set(&self, id: ParamId, value: f64) -> Option<f64> {
         let index = self.index_of(id)?;
         let value = self.descriptors[index].clamp(value);
-        self.values[index].store(value.to_bits(), Relaxed);
+        if self.values[index].swap(value.to_bits(), Relaxed) != value.to_bits() {
+            self.changes.fetch_add(1, Relaxed);
+        }
         Some(value)
+    }
+
+    /// How many times a value has changed since these were made, from any
+    /// thread. A reader that wants to know whether anything changed
+    /// compares it with what it saw last, as an editor does to redraw only
+    /// when it must.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.changes.load(Relaxed)
     }
 }
 
@@ -253,6 +267,18 @@ mod tests {
         assert_eq!(values.get(ParamId(2)), Some(2.0));
         assert_eq!(values.set(ParamId(3), 1.0), None);
         assert_eq!(values.get(ParamId(3)), None);
+    }
+
+    #[test]
+    fn the_generation_counts_only_values_that_change() {
+        let values = values();
+        let before = values.generation();
+        values.set(ParamId(2), 1.0);
+        assert_eq!(values.generation(), before, "the same value is no change");
+        values.set(ParamId(2), 2.0);
+        assert_eq!(values.generation(), before + 1);
+        values.set(ParamId(3), 1.0);
+        assert_eq!(values.generation(), before + 1, "no such parameter");
     }
 
     #[test]

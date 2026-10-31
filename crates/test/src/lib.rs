@@ -6,6 +6,7 @@
 //! | [`signal`] | Test audio made by code: sines, sweeps, noise, impulses. No test uses recorded or third-party audio |
 //! | [`ids`] | A plug-in's golden list of parameter IDs, checked to be only ever added to |
 //! | [`golden`] | Golden renders and null tests: references stored as 24-bit FLAC with a manifest, bit-exact on the platform that made them and below −96 dBFS elsewhere, remade only by `cargo xtask golden --update` |
+//! | [`snapshot`] | Snapshot tests for editors: an interface drawn off screen (headless, in software) compared with PNG references, remade only by `cargo xtask golden --update` |
 //! | [`measure`] | Measurements as plain numbers: RMS and peak, noise floor, frequency response and phase, THD and THD+N, aliasing, pitch |
 //! | [`cpu`] | Wall-clock timing of blocks, for the performance harness |
 //! | [`bench`] | The performance harness: benchmark suites of plug-in scenarios and micro-benchmarks, timed on reference machines and counted in instructions by CI's regression gate |
@@ -60,6 +61,7 @@ pub mod ids;
 pub mod measure;
 pub mod render;
 pub mod signal;
+pub mod snapshot;
 pub mod validate;
 #[cfg(feature = "hosts")]
 pub mod vst3;

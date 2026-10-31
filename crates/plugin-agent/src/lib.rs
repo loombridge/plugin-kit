@@ -10,6 +10,8 @@
 //!   exactly as a person's would, through [`Host`]'s gestures (begin, value,
 //!   end), so the host's automation, undo and saved project stay in step.
 //!   See [`commands`].
+//! - **A picture of its interface**: `ui.capture` draws the editor as it
+//!   looks now, off screen, and returns it as a PNG. See [`capture`].
 //! - **Its own agent server**: `lspk-agent`'s Streamable HTTP server on
 //!   `127.0.0.1`, started from the plug-in's main thread and served from
 //!   [`Plugin::on_main_thread`], off until the person switches it on
@@ -31,7 +33,8 @@
 //!   [summary](Plugin::summary)), `checkpoint` (named snapshots, restored
 //!   as one step), and `preview`, which renders a note, chord or phrase (or,
 //!   for an effect, a test signal) through a separate offline instance set
-//!   as this one is, and returns the audio with an analysis.
+//!   as this one is, and returns the audio with an analysis. `ui.capture`,
+//!   run with `run`, returns the interface as an image.
 //!
 //! ```ignore
 //! lspk_plugin::export_clap!(lspk_plugin_agent::WithAgent<MyPlugin>);
@@ -56,6 +59,7 @@
 //! clap-wrapper calls the plug-in back on the main thread only while its
 //! editor is open, so the server answers only then.
 
+pub mod capture;
 pub mod commands;
 pub mod headless;
 pub mod perception;

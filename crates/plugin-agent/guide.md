@@ -11,6 +11,7 @@ You're connected to one running instance of {name}, a plug-in built on Loombridg
 | `describe_command` | Read a command's description and argument schema before running it for the first time. |
 | `run` | Run one command, or several as one step. Set `dry_run` to check without changing anything. |
 | `checkpoint` | Save the plug-in's state under a name, try something, and restore it if you don't like the result. |
+| `run` with `ui.capture` | See it: the interface as it looks now, returned as a PNG image. |
 | `preview` | Hear it: a note, a chord or a short phrase (an instrument), or a test signal (an effect), rendered offline as a WAV file with an analysis. |
 
 ## Parameters
@@ -46,6 +47,10 @@ If the host is playing automation on a parameter, the automation may move it bac
 ## Hearing what you've done
 
 `preview` never touches the instance the host plays: it renders a separate copy, set as this one is, offline. Give an instrument `notes` (each a `key`, where 60 is middle C and 69 is A4 at 440 Hz, a `start` and `length` in seconds, and a `velocity` from 0 to 1); give an effect an `input` (a sine, sweep, noise, impulse or silence). The analysis reports the peak and RMS level, the pitch and its nearest note, the spectrum in octave bands with its centroid and how the centroid moves through the sound, the stereo width and the channels' correlation, and when the sound starts, peaks and dies away.
+
+## Seeing the interface
+
+Run `ui.capture` (with an optional `scale`, from 0.25 to 4 pixels to a point) and the interface comes back as an image, drawn off screen from the current values: no window opens, and one the person has open is untouched. Put it after `params.set` in the same `run` call to see the new values. It fails for a plug-in with no interface.
 
 Listen after each meaningful change, and compare against a checkpoint when you're unsure a change helped.
 

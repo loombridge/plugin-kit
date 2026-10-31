@@ -191,6 +191,7 @@ impl std::fmt::Debug for ServerStatus {
 /// One of them is already registered.
 pub fn register(registry: &mut Registry) -> Result<(), RegisterError> {
     register_params(registry)?;
+    crate::capture::register(registry)?;
     registry.register(
         CommandSpec::new(SET_SERVER, "Agent Server")
             .description(
@@ -218,7 +219,9 @@ pub fn register(registry: &mut Registry) -> Result<(), RegisterError> {
 }
 
 /// Adds the commands for the plug-in's parameters (`params.get`,
-/// `params.set`) to `registry`: all a plug-in run headless has of the kit's.
+/// `params.set`) to `registry`: with `ui.capture`
+/// ([`capture::register`](crate::capture::register)), all a plug-in run
+/// headless has of the kit's.
 ///
 /// # Errors
 ///

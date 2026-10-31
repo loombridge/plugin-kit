@@ -76,8 +76,8 @@ pub mod clap;
 
 pub use audio::{Buffers, MAX_CHANNELS};
 pub use editor::{
-    Editor, EditorContext, EditorKey, EditorSize, KeyboardFocus, ParentWindow, ResizeHints,
-    WindowApi,
+    Editor, EditorContext, EditorImage, EditorKey, EditorSize, KeyboardFocus, ParentWindow,
+    ResizeHints, WindowApi,
 };
 pub use events::{Event, EventSource, Events, Expression, Note};
 pub use host::{
@@ -260,7 +260,9 @@ pub trait Plugin: Sized + 'static {
     /// The plug-in's editor, if it has one: asked for once, as the
     /// instance starts, and kept for its life while the host opens and
     /// closes its window. It should hold no window until
-    /// [`Editor::create`]. Without one, the host offers no window.
+    /// [`Editor::create`]. Without one, the host offers no window. An agent's
+    /// `ui.capture` asks again, for an editor of its own to draw off screen
+    /// ([`Editor::capture`]), so this must be safe to call more than once.
     fn editor(&mut self) -> Option<Box<dyn Editor>> {
         None
     }
