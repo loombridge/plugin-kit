@@ -233,16 +233,24 @@ impl Pending {
         &self.question
     }
 
-    /// Answers the question and sends the reply to the waiting connection.
-    pub fn finish<P: Program>(self, server: &mut Server<P>, host: &mut P::Host, allow: bool) {
-        let body = server.resolve(host, self.question.id, allow);
-        let failed = body.as_ref().is_none_or(|b| b.get("error").is_some());
-        let session = (self.initialize && !failed).then_some(self.session);
-        let _ = self.reply.send(HttpReply {
-            status: 200,
-            session,
-            body,
-        });
+    /// Answers the question and sends the reply to the waiting connection,
+    /// or, for an allowed call that waits for the host, keeps it:
+    /// [`Served::Parked`].
+    pub fn finish<P: Program>(
+        self,
+        server: &mut Server<P>,
+        host: &mut P::Host,
+        allow: bool,
+    ) -> Served {
+        let Some(outcome) = server.resolve(host, self.question.id, allow) else {
+            let _ = self.reply.send(HttpReply {
+                status: 200,
+                session: None,
+                body: None,
+            });
+            return Served::Done;
+        };
+        deliver(outcome, self.reply, self.session, self.initialize, server)
     }
 }
 

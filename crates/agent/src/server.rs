@@ -112,8 +112,8 @@ pub struct Session {
 pub enum Outcome {
     /// Send this reply, or nothing for a notification or response.
     Reply(Option<Value>),
-    /// Ask the person, then call [`Server::resolve`] with the answer; the
-    /// reply comes from there.
+    /// Ask the person, then call [`Server::resolve`] with the answer; what
+    /// the request came to comes from there.
     Ask(Question),
     /// A tool call that waits: for the person's gesture (a drag) to end, so
     /// it lands after the drop as its own undo step, or for the host to do
@@ -890,15 +890,17 @@ impl<P: Program> Server<P> {
         })
     }
 
-    /// Answers a question: `allow` is the person's answer. Returns the reply
-    /// to the request that asked, or `None` if no question has that ID.
+    /// Answers a question: `allow` is the person's answer. Returns what the
+    /// request that asked came to, or `None` if no question has that ID: a
+    /// reply, or [`Outcome::Wait`] for an allowed call that waits for the
+    /// host, as a call the person hadn't been asked about does.
     ///
     /// Allowing an agent to connect allows it for good
     /// ([`Program::approve`]), and the session gets its rights; if an agent
     /// with that name is already allowed, the session is allowed for itself
     /// only, with none of that agent's rights, since anyone can give a name.
     /// Allowing a call runs it.
-    pub fn resolve(&mut self, host: &mut P::Host, question: u64, allow: bool) -> Option<Value> {
+    pub fn resolve(&mut self, host: &mut P::Host, question: u64, allow: bool) -> Option<Outcome> {
         let Waiting {
             session,
             request,
@@ -916,17 +918,17 @@ impl<P: Program> Server<P> {
                     if let Some(open) = self.sessions.get_mut(&session) {
                         open.agent = (!known).then_some(name);
                     }
-                    jsonrpc::response(request, result)
+                    Outcome::Reply(Some(jsonrpc::response(request, result)))
                 } else {
                     self.sessions.remove(&session);
-                    jsonrpc::error_response(
+                    Outcome::Reply(Some(jsonrpc::error_response(
                         request,
                         code::NOT_ALLOWED,
                         format!(
                             "the person didn't allow {name} to control {}",
                             self.program.info().title
                         ),
-                    )
+                    )))
                 }
             }
             WaitingKind::Call { name, args } => {
@@ -938,15 +940,15 @@ impl<P: Program> Server<P> {
                         json!({ "name": name, "arguments": args }),
                         true,
                     ) {
-                        Outcome::Reply(Some(reply)) => reply,
-                        // It was confirmed, so it never asks again, and it
-                        // runs straight away.
-                        Outcome::Reply(None) | Outcome::Ask(_) | Outcome::Wait(_) => {
-                            jsonrpc::error_response(
+                        // It was confirmed, so it never asks again: it
+                        // answers, or waits for the host.
+                        outcome @ (Outcome::Reply(Some(_)) | Outcome::Wait(_)) => outcome,
+                        Outcome::Reply(None) | Outcome::Ask(_) => {
+                            Outcome::Reply(Some(jsonrpc::error_response(
                                 request,
                                 code::INTERNAL_ERROR,
                                 "the call asked twice",
-                            )
+                            )))
                         }
                     }
                 } else {
@@ -955,7 +957,7 @@ impl<P: Program> Server<P> {
                         .get(&session)
                         .and_then(|s| s.protocol.as_deref())
                         .is_none_or(|v| v >= STRUCTURED_FROM);
-                    jsonrpc::response(
+                    Outcome::Reply(Some(jsonrpc::response(
                         request,
                         tool_result(
                             Err(format!(
@@ -968,7 +970,7 @@ impl<P: Program> Server<P> {
                             None,
                             "",
                         ),
-                    )
+                    )))
                 }
             }
         })

@@ -404,6 +404,11 @@ impl<P: Program> InProcess<P> {
     }
 }
 
+// One thread can't wait for a gesture it would have to end itself: tests of
+// waiting use `Server::handle` and `Server::resume`, or the HTTP server.
+const WAITS: &str =
+    "the call waits for the person's gesture to end, which this client can't wait for";
+
 impl<P: Program> Transport for InProcess<P> {
     fn send(&mut self, message: &Value) -> Result<Option<Value>, String> {
         match self
@@ -414,16 +419,15 @@ impl<P: Program> Transport for InProcess<P> {
             Outcome::Ask(question) => {
                 self.asked.push(question.text());
                 let allow = (self.answer)(&question);
-                Ok(self.server.resolve(&mut self.host, question.id, allow))
+                match self.server.resolve(&mut self.host, question.id, allow) {
+                    Some(Outcome::Wait(_)) => Err(WAITS.to_owned()),
+                    reply => Ok(reply.and_then(|outcome| match outcome {
+                        Outcome::Reply(reply) => reply,
+                        _ => None,
+                    })),
+                }
             }
-            // One thread can't wait for a gesture it would have to end
-            // itself: tests of waiting use `Server::handle` and
-            // `Server::resume`, or the HTTP server.
-            Outcome::Wait(_) => Err(
-                "the call waits for the person's gesture to end, which this client can't wait \
-                 for"
-                .to_owned(),
-            ),
+            Outcome::Wait(_) => Err(WAITS.to_owned()),
         }
     }
 }
