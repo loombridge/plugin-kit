@@ -11,6 +11,8 @@ publish.workspace = true
 [dependencies]
 # Parameter smoothing (`smooth`), re-exported.
 lspk-params.workspace = true
+# The analyser's FFT; pure Rust, as lspk-wavetable's.
+realfft = "3.5.0"
 # The pole-zero filter's design, as presets store it.
 serde = { version = "1.0.228", default-features = false, features = ["std", "derive"] }
 

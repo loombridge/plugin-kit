@@ -982,3 +982,42 @@ fn a_bank_voice_matches_a_lone_voice() {
     let voice1: Vec<f32> = out.chunks(3).map(|f| f[1]).collect();
     assert_eq!(voice1, lone);
 }
+
+#[test]
+fn the_phase_is_where_the_voice_is_in_its_cycle() {
+    // A free LFO's phase is its clock's; a restarting voice's counts from its
+    // note; a song-locked one reads the transport.
+    let mut free = Lfo::new(settings(LfoType::Drawn, Mode::Free, hz(10.0)), 0);
+    let mut t = Transport::new(SR);
+    let mut voice = free.voice(0);
+    play_voice(&mut free, &mut voice, &mut t, 2400, 100, &[]);
+    assert!(close(free.phase(&voice, &t), 0.5, 1e-4));
+
+    let mut restart = Lfo::new(settings(LfoType::Drawn, Mode::Restart, hz(5.0)), 0);
+    let mut t = Transport::new(SR);
+    let mut voice = restart.voice(0);
+    play_voice(&mut restart, &mut voice, &mut t, 6000, 100, &[1200]);
+    // 4800 samples after the note, a half cycle at 5 Hz.
+    assert!(close(restart.phase(&voice, &t), 0.5, 1e-4));
+
+    let mut s = settings(LfoType::Drawn, Mode::Restart, Rate::default());
+    s.song_lock = true;
+    let mut locked = Lfo::new(s, 0);
+    let mut t = Transport::new(SR);
+    t.playing = true;
+    let mut voice = locked.voice(0);
+    play_voice(&mut locked, &mut voice, &mut t, 1000, 100, &[500]);
+    let beats = t.beats;
+    assert!(close(locked.phase(&voice, &t), (beats % 1.0) as f32, 1e-4));
+
+    // A shared slot reads the one shared state, for any voice.
+    let mut s = settings(LfoType::Drawn, Mode::Restart, hz(5.0));
+    s.shared = true;
+    let mut bank = LfoBank::new(Lfo::new(s, 0), 4);
+    bank.trigger(0, 0);
+    let mut t = Transport::new(SR);
+    let mut out = vec![0.0; 4800 * 4];
+    bank.process(&t, 4800, &mut out, None);
+    t.advance(4800);
+    assert!(close(bank.phase(3, &t), 0.5, 1e-4));
+}

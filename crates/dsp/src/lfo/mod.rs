@@ -689,6 +689,38 @@ impl Lfo {
         }
     }
 
+    /// Phase, in cycles, snapped to the grid when it's on.
+    fn start_phase(&self) -> f64 {
+        let s = &self.settings;
+        let phase = f64::from(s.phase.clamp(0.0, 360.0)) / 360.0;
+        if s.phase_snap && s.grid_x > 0 {
+            let grid = f64::from(s.grid_x);
+            return (phase * grid).round() / grid;
+        }
+        phase
+    }
+
+    /// Where `voice` is in its cycle, 0 up to 1, at the next sample to
+    /// render: what an interface draws as the LFO's phase. It is the
+    /// position before direction, swing and smoothing shape the value.
+    /// `transport` is the transport at that sample, the last block's
+    /// advanced by its frames.
+    #[must_use]
+    pub fn phase(&self, voice: &LfoVoice, transport: &Transport) -> f32 {
+        let cycles = if self.settings.mode == Mode::Free {
+            self.clock_next + self.start_phase()
+        } else {
+            match voice.anchor {
+                Anchor::Samples { c0, n, inc } => c0 + n as f64 * inc,
+                Anchor::Beats { c0, b0, per_beat } => c0 + (transport.beats - b0) * per_beat,
+                Anchor::Seconds { c0, s0, per_second } => {
+                    c0 + (transport.seconds - s0) * per_second
+                }
+            }
+        };
+        cycles.rem_euclid(1.0) as f32
+    }
+
     /// A fresh state for voice `index`, with its own random values.
     #[must_use]
     pub fn voice(&self, index: usize) -> LfoVoice {
@@ -749,11 +781,7 @@ impl Lfo {
         let per_beat = per_beat.map(|p| p * limit);
         let hz = hz.map(|h| h * limit);
 
-        let mut phase = f64::from(s.phase.clamp(0.0, 360.0)) / 360.0;
-        if s.phase_snap && s.grid_x > 0 {
-            let grid = f64::from(s.grid_x);
-            phase = (phase * grid).round() / grid;
-        }
+        let phase = self.start_phase();
 
         let locked = s.song_lock && transport.playing;
         // A locked LFO is a function of the transport's position: its mode

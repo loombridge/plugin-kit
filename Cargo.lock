@@ -1346,6 +1346,7 @@ dependencies = [
  "lspk-params",
  "lspk-rt",
  "lspk-test",
+ "realfft",
  "serde",
  "serde_json",
 ]
