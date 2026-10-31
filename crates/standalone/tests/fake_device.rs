@@ -548,7 +548,9 @@ fn the_editor_opens_in_the_apps_window_and_its_changes_reach_the_processor() {
     }
 
     let fake = FakeBackend::new(devices());
-    let mut app = app::<Edited>(&fake, Settings::default());
+    // Exported with the agent interface, as the kit's plug-ins are: it
+    // brings the `params.set` the editor's drag runs.
+    let mut app = app::<lspk_plugin_agent::WithAgent<Edited>>(&fake, Settings::default());
     assert!(app.has_editor() && !app.editor_is_open());
     app.start();
     let size = app

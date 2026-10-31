@@ -129,7 +129,6 @@ pub fn param_control(
         theme,
         d: &view.descriptor,
         value: view.real(values.value_at(index)),
-        carried: view.carried,
         id: control_id(stored.id),
         rect,
         kind: ControlKind::for_param(&view.descriptor),
@@ -180,8 +179,6 @@ struct Control<'a> {
     d: &'a ParamDescriptor,
     /// Its real value, in `d`'s units.
     value: f64,
-    /// Whether the value kept for it is its travel (a slot's parameter).
-    carried: bool,
     id: Id,
     rect: Rect,
     kind: ControlKind,
@@ -515,7 +512,7 @@ impl Control<'_> {
             });
             let value = d.denormalize((drag.start + drag.moved).clamp(0.0, 1.0));
             if dy != 0.0 && value != self.value {
-                let _ = self.cx.set_param(d.id, self.stored(value));
+                let _ = self.cx.set_param(d.id, value);
             }
         }
         if response.drag_stopped() {
@@ -607,16 +604,7 @@ impl Control<'_> {
     /// Sets the value in one gesture, if it changes.
     fn edit(&self, value: f64) {
         if self.d.clamp(value) != self.value {
-            let _ = self.cx.edit(self.d.id, self.stored(value));
-        }
-    }
-
-    /// The value kept for the real value `value`.
-    fn stored(&self, value: f64) -> f64 {
-        if self.carried {
-            self.d.normalize(value)
-        } else {
-            value
+            let _ = self.cx.edit(self.d.id, value);
         }
     }
 

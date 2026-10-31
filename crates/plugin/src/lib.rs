@@ -292,6 +292,25 @@ pub trait Plugin: Sized + 'static {
         let _ = args;
         Err(PluginError::new(format!("no command `{id}`")))
     }
+
+    /// Runs the command `id` as [`run_command`](Self::run_command) does,
+    /// for the plug-in's own interface ([`EditorContext::run_command`]),
+    /// which names the step `undo_label`: a plug-in with an undo history of
+    /// its own records the step under that name. By default the label is
+    /// ignored.
+    ///
+    /// # Errors
+    ///
+    /// Why the command didn't run.
+    fn run_command_labelled(
+        &mut self,
+        id: &str,
+        args: &serde_json::Value,
+        undo_label: &str,
+    ) -> Result<serde_json::Value, PluginError> {
+        let _ = undo_label;
+        self.run_command(id, args)
+    }
 }
 
 /// A plug-in's audio-thread half, made by [`Plugin::activate`].

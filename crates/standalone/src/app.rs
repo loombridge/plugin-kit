@@ -569,7 +569,7 @@ impl<P: Plugin> Standalone<P> {
     /// the default device if the chosen one is gone, and back on the chosen
     /// one when it returns), and one that couldn't open is tried again.
     pub fn poll(&mut self) {
-        self.changes.apply(&self.host);
+        self.changes.apply(&self.host, &mut self.plugin);
         if self.requests.editor_closed.swap(false, Ordering::Acquire) {
             self.close_editor();
         }
