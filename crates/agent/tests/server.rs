@@ -568,6 +568,42 @@ fn http_checks_every_request_and_serves_sessions() {
 }
 
 #[test]
+fn a_chunk_size_too_large_to_add_is_refused_and_leaves_no_connection_open() {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+
+    let config = HttpConfig {
+        port: 0,
+        token: "server-token".to_owned(),
+    };
+    let http = HttpServer::start(&config, endpoint(), Arc::new(|| {})).unwrap();
+    // More than the server holds at once, so a leaked slot would show.
+    for _ in 0..lspk_agent::http::MAX_CONNECTIONS + 1 {
+        let mut stream = TcpStream::connect(http.local_addr()).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .write_all(
+                b"POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n\r\n\
+                  1\r\nA\r\nffffffffffffffff\r\n",
+            )
+            .unwrap();
+        let mut reply = String::new();
+        let _ = stream.read_to_string(&mut reply);
+        assert!(reply.starts_with("HTTP/1.1 413 "), "{reply}");
+    }
+    for _ in 0..500 {
+        if http.connections() == 0 {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(http.connections(), 0);
+    http.stop();
+}
+
+#[test]
 fn rules_and_decisions_are_the_programs() {
     let rules = Rules {
         person_only: &|_| false,

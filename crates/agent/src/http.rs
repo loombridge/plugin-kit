@@ -506,15 +506,31 @@ fn accept(listener: &TcpListener, shared: &Arc<Shared>) {
         let spawned = thread::Builder::new()
             .name("agent-connection".to_owned())
             .spawn(move || {
+                // Frees the slot however the connection ends, a panic included.
+                let _slot = Slot {
+                    shared: &serving,
+                    id,
+                };
                 let _ = connection(stream, &serving);
-                if let Ok(mut connections) = serving.connections.lock() {
-                    connections.retain(|(other, _)| *other != id);
-                }
             });
         if spawned.is_err()
             && let Ok(mut connections) = shared.connections.lock()
         {
             connections.retain(|(other, _)| *other != id);
+        }
+    }
+}
+
+/// A connection's place among the open ones, freed when it drops.
+struct Slot<'a> {
+    shared: &'a Shared,
+    id: u64,
+}
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut connections) = self.shared.connections.lock() {
+            connections.retain(|(other, _)| *other != self.id);
         }
     }
 }
@@ -752,7 +768,9 @@ fn read_chunked(reader: &mut impl BufRead) -> Result<Vec<u8>, ReadError> {
                 }
             }
         }
-        if body.len() + size > MAX_BODY {
+        // `body` never outgrows MAX_BODY, so this can't overflow however large
+        // the size a client claims.
+        if size > MAX_BODY - body.len() {
             return Err(ReadError::Bad(413, "the request's body is too large"));
         }
         let start = body.len();
