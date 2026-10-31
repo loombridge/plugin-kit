@@ -547,10 +547,10 @@ impl EditorChanges {
                     args,
                     undo_label,
                 } => {
-                    if let Err(why) = self.run(plugin, &id, &args, &undo_label) {
-                        if let Ok(mut failure) = self.failure.lock() {
-                            *failure = Some(why);
-                        }
+                    if let Err(why) = self.run(plugin, &id, &args, &undo_label)
+                        && let Ok(mut failure) = self.failure.lock()
+                    {
+                        *failure = Some(why);
                     }
                     Ok(())
                 }
