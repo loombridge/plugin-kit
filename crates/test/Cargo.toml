@@ -49,6 +49,8 @@ claxon = "0.4.3"
 # The golden manifest.
 serde = { version = "1.0.228", default-features = false, features = ["std", "derive"] }
 serde_json = "1"
+# Snapshot references and the images an agent tool returns are PNG files.
+png = "0.18.1"
 # Audio an agent tool returns, which comes as WAV.
 hound = "3.5.1"
 # A VST3 host for tests: bindings generated from the VST3 SDK's headers,

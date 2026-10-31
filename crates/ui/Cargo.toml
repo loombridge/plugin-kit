@@ -46,6 +46,8 @@ accesskit_windows = "=0.34.0"
 windows-sys = { version = "0.61.2", features = ["Win32_UI_WindowsAndMessaging"] }
 
 [dev-dependencies]
+# Snapshot references, and the benchmark harness.
+lspk-test.workspace = true
 # The host link's edit queue, read back in the tests.
 rtrb = "0.4.0"
 # The editor host example (examples/editor_host.rs): a CLAP host, pinned
@@ -56,6 +58,12 @@ lspk-plugin-agent.workspace = true
 lspk-commands.workspace = true
 clack-host = "=0.2.0"
 clack-extensions = { version = "=0.2.0", features = ["clack-host", "gui", "params"] }
+
+# The interface-cost benchmarks, run by `cargo xtask bench` (timing) and
+# CI's instruction-count gate.
+[[bench]]
+name = "perf"
+harness = false
 
 [lints]
 workspace = true

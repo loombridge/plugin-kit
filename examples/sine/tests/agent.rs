@@ -75,7 +75,7 @@ fn an_agent_plays_the_sine_through_its_own_server() {
             .expect("its guide");
         assert!(guide.contains("a pure sine"), "{guide}");
         let areas = call(&mut client, "list_commands", json!({}));
-        assert_eq!(areas["areas"], json!({ "agent": 2, "params": 2 }));
+        assert_eq!(areas["areas"], json!({ "agent": 2, "params": 2, "ui": 1 }));
         let state = call(&mut client, "query", json!({}));
         assert_eq!(state["plugin"]["kind"], "instrument");
         assert_eq!(state["params"][0]["text"], "-6.0 dB");

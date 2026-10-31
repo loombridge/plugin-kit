@@ -53,6 +53,12 @@
 //! therefore in [`EditorContext::values`] once the main thread has run the
 //! command, not before.
 //!
+//! # Off screen
+//!
+//! An editor may also draw its interface into an image with no window
+//! ([`Editor::capture`]), which is how an agent sees it and how its
+//! snapshot tests run, headless, on every platform.
+//!
 //! # The keyboard
 //!
 //! An editor also tells its host where it stands with the keyboard
@@ -179,6 +185,18 @@ pub struct EditorKey {
     pub pressed: bool,
 }
 
+/// An interface drawn off screen: straight (not premultiplied) RGBA, row by
+/// row from the top left.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorImage {
+    /// Its width, in pixels.
+    pub width: u32,
+    /// Its height, in pixels.
+    pub height: u32,
+    /// Four bytes a pixel: red, green, blue, alpha.
+    pub rgba: Vec<u8>,
+}
+
 /// How a host may resize an editor's window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResizeHints {
@@ -261,6 +279,20 @@ pub trait Editor: 'static {
 
     /// Called on the main thread after [`EditorContext::request_callback`].
     fn on_main_thread(&mut self) {}
+
+    /// Draws the interface as it is now, from `cx`'s values, into an image
+    /// with no window, at `scale` pixels to a point and its zoom at the
+    /// instance's. Works whether or not the editor is open, and leaves any
+    /// open window alone.
+    ///
+    /// # Errors
+    ///
+    /// Why it can't: the default, for an editor that draws nothing off
+    /// screen, says so.
+    fn capture(&self, cx: &EditorContext, scale: f32) -> Result<EditorImage, PluginError> {
+        let _ = (cx, scale);
+        Err(PluginError::new("the editor can't be drawn off screen"))
+    }
 }
 
 /// What an editor's window asks of the host, from any thread. A format's
@@ -351,6 +383,21 @@ impl EditorContext {
                 failure,
             },
         )
+    }
+
+    /// A link to `values` that reaches no host: nothing an editor does
+    /// through it is passed on. For drawing an editor off screen
+    /// ([`Editor::capture`]).
+    #[must_use]
+    pub fn detached(values: Arc<ParamValues>) -> Self {
+        struct Nobody;
+        impl EditorHost for Nobody {
+            fn request_callback(&self) {}
+            fn request_resize(&self, _size: EditorSize) -> bool {
+                false
+            }
+        }
+        Self::new(values, Box::new(Nobody)).0
     }
 
     /// Every parameter's descriptor and value now, kept current from

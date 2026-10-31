@@ -19,6 +19,19 @@
 //! hosts, and the OpenGL route is the one Rust plug-in editors have used in
 //! hosts for longest. Nothing outside this module depends on the choice.
 //!
+//! # When it draws
+//!
+//! A window draws only when something changed: input arrived, egui asked
+//! for a frame (an animation, a tooltip's delay, a view that called
+//! `request_repaint_after` because it shows a value that moves), or a
+//! parameter's value changed under it. With none of those it draws
+//! nothing, and costs the host nothing. The audio thread can't wake a
+//! window, so a thread of the window's own ([`Watcher`]) looks at
+//! [`ParamValues::generation`](lspk_plugin::ParamValues::generation) every
+//! [`POLL`] and asks for a frame when it moved; that look draws nothing.
+//! A change the window's own controls make is seen the same way, and so
+//! draws one frame more than it needs.
+//!
 //! # The keyboard
 //!
 //! The window tells the host when it gains and loses the keyboard focus
@@ -37,16 +50,17 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use baseview::dpi::LogicalSize;
 use baseview::host::{HostCallbacks, HostMainThreadCaller};
-use baseview::{HandlerError, ParentWindowHandle, WindowSize};
+use baseview::{HandlerError, ParentWindowHandle, WindowSize, WindowWaker};
 use egui::{Key, Rect, Sense, Ui, Vec2, ViewportCommand, pos2, vec2};
 use egui_baseview::{EguiWindow, EguiWindowSettings, Frame};
 use lspk_plugin::{
-    Editor, EditorContext, EditorKey, EditorSize, KeyboardFocus, ParentWindow, PluginError,
-    ResizeHints, WindowApi,
+    Editor, EditorContext, EditorImage, EditorKey, EditorSize, KeyboardFocus, ParentWindow,
+    PluginError, ResizeHints, WindowApi,
 };
 use raw_window_handle::{
     AppKitWindowHandle, HandleError, HasWindowHandle, RawWindowHandle, Win32WindowHandle,
@@ -55,11 +69,16 @@ use raw_window_handle::{
 
 use crate::accessibility::Accessibility;
 use crate::controls::end_open_gestures;
+use crate::offscreen::Offscreen;
 use crate::theme::{Theme, clamp_zoom, step_zoom};
 
-/// How often an open window looks for changes it didn't make (the host's
-/// automation, the plug-in's own edits), and redraws.
+/// How often an open window looks for parameter values changing under it
+/// (the host's automation, the plug-in's own edits).
 const POLL: Duration = Duration::from_millis(33);
+
+/// The most pixels a capture draws: about 8 megapixels, which the software
+/// renderer holds as 128 MB.
+const MAX_CAPTURE_PIXELS: f32 = 8_000_000.0;
 
 /// The size of the grip in the corner of a resizable window, in points.
 const GRIP: f32 = 14.0;
@@ -318,6 +337,7 @@ impl EguiEditor {
             ctx: None,
             accessibility: None,
             focus: KeyboardFocus::default(),
+            watcher: None,
         };
         let host = baseview::host::Host::new()
             .with_callbacks(Callbacks {
@@ -475,6 +495,27 @@ impl Editor for EguiEditor {
         }
     }
 
+    fn capture(&self, cx: &EditorContext, scale: f32) -> Result<EditorImage, PluginError> {
+        if !(scale.is_finite() && scale > 0.0) {
+            return Err(PluginError::new("the scale must be a positive number"));
+        }
+        let pixels = self.state.points() * self.state.zoom() * scale;
+        if pixels.x * pixels.y > MAX_CAPTURE_PIXELS {
+            return Err(PluginError::new(
+                "the picture would be too large; use a smaller scale",
+            ));
+        }
+        let mut offscreen = Offscreen::new(
+            (self.make_view)(),
+            cx.clone(),
+            self.options.theme.clone(),
+            self.state.points(),
+            self.state.zoom(),
+            scale,
+        );
+        Ok(offscreen.render())
+    }
+
     fn on_main_thread(&mut self) {
         if let Some(window) = self.window() {
             window.host_main_thread_callback();
@@ -577,6 +618,8 @@ struct WindowApp {
     accessibility: Option<Accessibility>,
     /// Where the window stood with the keyboard, as last told to the host.
     focus: KeyboardFocus,
+    /// Asks for a frame when a parameter's value changes under the window.
+    watcher: Option<Watcher>,
 }
 
 impl egui_baseview::App for WindowApp {
@@ -589,6 +632,7 @@ impl egui_baseview::App for WindowApp {
             &self.state.system_scale,
             frame.baseview_window().scale_factor() as f32,
         );
+        self.watcher = Watcher::start(self.cx.clone(), frame.baseview_window().waker());
         self.ctx = Some(ctx);
         Ok(())
     }
@@ -619,10 +663,9 @@ impl egui_baseview::App for WindowApp {
             resize_grip(ui, &self.theme, self.state.points(), self.min_size);
         }
         self.focus = pass_keys(ui, &self.cx, self.focus);
-        // Asked of the window, not egui: egui calls back only when a
-        // repaint comes sooner than one already asked for, and
-        // egui-baseview doesn't read the delay egui reports.
-        frame.baseview_window().request_redraw_after(POLL);
+        // No frame is asked for here: egui-baseview draws again when egui
+        // asks (it passes on the delay of each request), on input, and when
+        // the watcher says a value changed.
     }
 
     fn resized(&mut self, size: WindowSize) {
@@ -630,6 +673,54 @@ impl egui_baseview::App for WindowApp {
         // editor's points at 100 % zoom.
         self.state
             .set_points(vec2(size.logical.width as f32, size.logical.height as f32));
+    }
+}
+
+/// A thread that looks for parameter values changing under an open window
+/// and asks it to draw when they do. It never draws, and doesn't touch the
+/// window's state; the audio thread can't wake a window, which is why it's
+/// a look rather than a wake.
+struct Watcher {
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Watcher {
+    /// Starts looking; `None` if the thread didn't start, when the window
+    /// shows changes on its next frame.
+    fn start(cx: EditorContext, waker: WindowWaker) -> Option<Self> {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let thread = std::thread::Builder::new()
+            .name("lspk-editor-watch".to_owned())
+            .spawn(move || {
+                let mut seen = cx.values().generation();
+                while !stopped.load(Ordering::Acquire) {
+                    std::thread::park_timeout(POLL);
+                    let now = cx.values().generation();
+                    if now != seen {
+                        seen = now;
+                        waker.request_redraw();
+                    }
+                }
+            })
+            .ok()?;
+        Some(Self {
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for Watcher {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        // Joined, so no code of the plug-in's runs after its window is
+        // gone and the host may unload it.
+        if let Some(thread) = self.thread.take() {
+            thread.thread().unpark();
+            let _ = thread.join();
+        }
     }
 }
 

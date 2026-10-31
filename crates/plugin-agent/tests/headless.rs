@@ -57,6 +57,10 @@ impl Plugin for Toy {
         })
     }
 
+    fn editor(&mut self) -> Option<Box<dyn lspk_plugin::Editor>> {
+        Some(Box::new(lspk_ui::generic_editor("Toy", &self.params())))
+    }
+
     fn register_commands(&self, registry: &mut Registry) -> Result<(), RegisterError> {
         registry.register(
             CommandSpec::new(WIPE, "Wipe")
@@ -348,6 +352,60 @@ fn a_preview_waits_for_its_render_and_returns_audio_and_an_analysis() {
         .expect("audio");
     let audio = decode_wav(&base64::decode(blob).expect("base64")).expect("a WAV file");
     assert!(audio.frames() > 0 && !audio.is_silent());
+}
+
+#[test]
+fn the_interface_comes_back_as_an_image_of_the_values_the_commands_before_it_set() {
+    let capture = |scale: Value| json!({ "command": "ui.capture", "args": { "scale": scale } });
+    let set = json!({ "command": "params.set",
+        "args": { "values": [ { "param": "Level", "value": 1.0 } ] } });
+    let talk = talk(
+        &mut headless(),
+        false,
+        &[
+            ("describe_command", json!({ "command": "ui.capture" })),
+            ("run", json!({ "commands": [capture(json!(1.0))] })),
+            ("run", json!({ "commands": [set, capture(json!(1.0))] })),
+            ("run", json!({ "commands": [capture(json!(2.0))] })),
+            ("run", json!({ "commands": [capture(json!(9.0))] })),
+        ],
+    );
+    assert_eq!(talk.ok(0)["permission"], "read");
+    assert_eq!(talk.ok(0)["access"], "runs");
+    assert!(talk.ok(0)["args"]["properties"]["scale"].is_object());
+    let png = |index: usize| {
+        let blob = talk.reply(index)["result"]["content"]
+            .as_array()
+            .expect("content")
+            .iter()
+            .find_map(|block| block["data"].as_str())
+            .expect("an image");
+        lspk_test::snapshot::decode_png(&base64::decode(blob).expect("base64")).expect("a PNG")
+    };
+    let (small, moved, big) = (png(1), png(2), png(3));
+    assert_eq!((small.width, small.height), (moved.width, moved.height));
+    assert_ne!(small.rgba, moved.rgba, "the Level knob moved");
+    let size = &talk.ok(1)["results"][0]["result"];
+    assert_eq!(
+        (size["width"].as_u64(), size["height"].as_u64()),
+        (Some(u64::from(small.width)), Some(u64::from(small.height)))
+    );
+    assert_eq!((big.width, big.height), (small.width * 2, small.height * 2));
+    let background = &small.rgba[..4];
+    assert!(
+        small
+            .rgba
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|pixel| pixel != background),
+        "the controls are drawn"
+    );
+    assert!(
+        talk.error(4).contains("from 0.25 to 4"),
+        "{}",
+        talk.error(4)
+    );
 }
 
 #[test]

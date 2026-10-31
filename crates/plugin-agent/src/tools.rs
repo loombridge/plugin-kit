@@ -15,6 +15,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::capture;
 use crate::commands::{self, Edits, ParamRef, parse, person_only};
 use crate::perception::{self, Job, PreviewArgs};
 
@@ -228,6 +229,7 @@ impl<P: Plugin> Tools<P> {
             Mode::Headless { .. } => {
                 let mut registry = Registry::new();
                 commands::register_params(&mut registry)?;
+                crate::capture::register(&mut registry)?;
                 plugin.register_commands(&mut registry)?;
                 Ok(registry)
             }
@@ -396,13 +398,21 @@ impl<P: Plugin> Tools<P> {
         let before_own = plugin.save_state();
         let mut edits = Edits::new(&self.host);
         let mut results = Vec::new();
+        let mut media = Vec::new();
         for (index, step) in commands.iter().enumerate() {
-            let result = commands::run_params(&self.host, &mut edits, &step.command, &step.args)
-                .unwrap_or_else(|| {
-                    plugin
-                        .run_command(&step.command, &step.args)
-                        .map_err(|e| e.to_string())
-                });
+            let result = if step.command == capture::CAPTURE {
+                capture::run(plugin, &self.host, &step.args).map(|(value, image)| {
+                    media.push(image);
+                    value
+                })
+            } else {
+                commands::run_params(&self.host, &mut edits, &step.command, &step.args)
+                    .unwrap_or_else(|| {
+                        plugin
+                            .run_command(&step.command, &step.args)
+                            .map_err(|e| e.to_string())
+                    })
+            };
             match result {
                 Ok(value) => results.push(json!({ "command": step.command, "result": value })),
                 Err(message) => {
@@ -423,7 +433,12 @@ impl<P: Plugin> Tools<P> {
             }
         }
         edits.finish();
-        ToolOutcome::Done(Ok(json!({ "results": results })))
+        let results = json!({ "results": results });
+        if media.is_empty() {
+            ToolOutcome::Done(Ok(results))
+        } else {
+            ToolOutcome::WithMedia(results, media)
+        }
     }
 
     fn query(&self, plugin: &P, args: &Value) -> Result<Value, String> {

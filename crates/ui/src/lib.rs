@@ -31,6 +31,8 @@ pub mod controls;
 pub mod editor;
 pub mod fonts;
 pub mod generic;
+pub mod offscreen;
+mod raster;
 pub mod theme;
 
 pub use controls::{ControlKind, param_control};

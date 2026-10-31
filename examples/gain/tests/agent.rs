@@ -134,7 +134,7 @@ fn an_agent_drives_the_gain_through_its_own_server() {
         let areas = call(client, "list_commands", json!({}));
         assert_eq!(
             areas["areas"],
-            json!({ "agent": 2, "gain": 1, "params": 2 })
+            json!({ "agent": 2, "gain": 1, "params": 2, "ui": 1 })
         );
         let found = call(client, "list_commands", json!({ "search": "reset" }));
         assert_eq!(found["commands"][0]["id"], RESET);
