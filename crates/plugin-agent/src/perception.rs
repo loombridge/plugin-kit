@@ -14,9 +14,9 @@ use std::fmt;
 use lspk_agent::Media;
 use lspk_params::ParamId;
 use lspk_plugin::Plugin;
-use lspk_test::measure;
 use lspk_test::render::{Instance, Output, Script, Settings};
 use lspk_test::signal;
+use lspk_test::{features, measure};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -320,20 +320,7 @@ fn centroid_movement(mono: &[f32], rate: f64, onset: f64, end: f64) -> Vec<f64> 
 /// right) rather than mid, from 0 for mono to 1 for opposite channels, and
 /// the channels' correlation from −1 to 1.
 fn stereo_width(output: &Output) -> Option<(f64, f64)> {
-    let [left, right, ..] = output.channels.as_slice() else {
-        return None;
-    };
-    let (mut mid, mut side, mut ll, mut rr, mut lr) = (0.0, 0.0, 0.0, 0.0, 0.0);
-    for (&l, &r) in left.iter().zip(right) {
-        let (l, r) = (f64::from(l), f64::from(r));
-        mid += (l + r) * (l + r) / 4.0;
-        side += (l - r) * (l - r) / 4.0;
-        (ll, rr, lr) = (ll + l * l, rr + r * r, lr + l * r);
-    }
-    let total = mid + side;
-    let norm = (ll * rr).sqrt();
-    // A silent channel correlates with nothing.
-    (total > 0.0).then(|| (side / total, if norm > 0.0 { lr / norm } else { 0.0 }))
+    features::stereo(output).map(|s| (s.width, s.correlation))
 }
 
 /// The analysis of a preview, as numbers and a summary in prose.
