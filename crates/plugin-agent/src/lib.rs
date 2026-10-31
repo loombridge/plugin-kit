@@ -213,6 +213,28 @@ impl<P: Plugin> Plugin for WithAgent<P> {
     }
 
     fn run_command(&mut self, id: &str, args: &Value) -> Result<Value, PluginError> {
+        self.run(id, args, None)
+    }
+
+    fn run_command_labelled(
+        &mut self,
+        id: &str,
+        args: &Value,
+        undo_label: &str,
+    ) -> Result<Value, PluginError> {
+        self.run(id, args, Some(undo_label))
+    }
+}
+
+impl<P: Plugin> WithAgent<P> {
+    /// Runs command `id`: the kit's own, or the plug-in's, which hears the
+    /// `undo_label` of a run from its interface.
+    fn run(
+        &mut self,
+        id: &str,
+        args: &Value,
+        undo_label: Option<&str>,
+    ) -> Result<Value, PluginError> {
         let status = |status: ServerStatus| {
             serde_json::to_value(status).map_err(|e| PluginError::new(e.to_string()))
         };
@@ -227,9 +249,10 @@ impl<P: Plugin> Plugin for WithAgent<P> {
                 let mut edits = Edits::new(&host);
                 let result = commands::run_params(&host, &mut edits, id, args);
                 edits.finish();
-                match result {
-                    Some(result) => result.map_err(PluginError::new),
-                    None => self.plugin.run_command(id, args),
+                match (result, undo_label) {
+                    (Some(result), _) => result.map_err(PluginError::new),
+                    (None, Some(label)) => self.plugin.run_command_labelled(id, args, label),
+                    (None, None) => self.plugin.run_command(id, args),
                 }
             }
         }

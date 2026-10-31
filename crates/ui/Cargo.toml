@@ -11,6 +11,8 @@ publish.workspace = true
 [dependencies]
 lspk-params.workspace = true
 lspk-plugin.workspace = true
+# The arguments of the commands an editor's buttons run.
+serde_json = "1"
 # Pinned exactly and upgraded deliberately, with egui-baseview, which pins
 # egui's minor version and baseview's. Without `default_fonts`: egui's
 # bundled fonts are under the OFL and the Ubuntu Font Licence, which
@@ -51,6 +53,9 @@ rtrb = "0.4.0"
 # The editor host example (examples/editor_host.rs): a CLAP host, pinned
 # as lspk-test pins it, around a plug-in built in with the CLAP export.
 lspk-plugin = { workspace = true, features = ["clap"] }
+# The plug-in the generic editor's tests edit: it has the kit's `params.set`.
+lspk-plugin-agent.workspace = true
+lspk-commands.workspace = true
 clack-host = "=0.2.0"
 clack-extensions = { version = "=0.2.0", features = ["clack-host", "gui", "params"] }
 

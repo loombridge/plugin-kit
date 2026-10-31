@@ -16,6 +16,8 @@
 //! - [`sanitize`]: LLVM's RealtimeSanitizer, which also catches locks and
 //!   blocking calls, in builds that ask for it (`--cfg lspk_rtsan`).
 //! - [`log`]: a lock-free logger for real-time threads.
+//! - [`telemetry`]: a wait-free channel of live values to an editor, written
+//!   only while one is watching.
 //!
 //! A real-time section is code that runs on the audio path. [`realtime`]
 //! runs one: denormals flushed, heap use trapped, and RealtimeSanitizer
@@ -49,6 +51,7 @@ install_trap!();
 pub mod denormals;
 pub mod log;
 pub mod sanitize;
+pub mod telemetry;
 pub mod thread;
 pub mod trap;
 pub mod workgroup;

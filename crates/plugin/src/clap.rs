@@ -514,13 +514,11 @@ impl<'a, P: Plugin> PluginMainThread<'a, ClapShared<'a, P>> for ClapMainThread<'
     fn on_main_thread(&self) {
         // The host's automation may have changed a slot's module.
         self.host.sync_slots();
-        if let Some(editor) = &self.editor {
-            if let Ok(mut changes) = editor.changes.try_borrow_mut() {
-                changes.apply(&self.host);
-            }
-            if let Ok(mut editor) = editor.editor.try_borrow_mut() {
-                editor.on_main_thread();
-            }
+        self.apply_editor_changes();
+        if let Some(editor) = &self.editor
+            && let Ok(mut editor) = editor.editor.try_borrow_mut()
+        {
+            editor.on_main_thread();
         }
         if let Ok(mut plugin) = self.plugin.try_borrow_mut() {
             plugin.on_main_thread();
@@ -603,6 +601,21 @@ unsafe extern "C" fn run_command<P: Plugin>(
 }
 
 impl<P: Plugin> ClapMainThread<'_, P> {
+    /// Runs the editor's waiting changes: its commands through the
+    /// plug-in, its gestures through the host link. While the plug-in is
+    /// busy they wait, and the host is asked to call back.
+    fn apply_editor_changes(&self) {
+        let Some(editor) = &self.editor else { return };
+        let Ok(mut changes) = editor.changes.try_borrow_mut() else {
+            return;
+        };
+        if let Ok(mut plugin) = self.plugin.try_borrow_mut() {
+            changes.apply(&self.host, &mut *plugin);
+        } else if !changes.is_empty() {
+            self.host.request_callback();
+        }
+    }
+
     /// The plug-in's commands.
     fn registry(&self) -> Result<lspk_commands::Registry, String> {
         let plugin = self
@@ -1357,11 +1370,7 @@ impl<P: Plugin> PluginGuiImpl for ClapMainThread<'_, P> {
     fn destroy(&self) {
         self.with_editor(|editor, _| editor.destroy());
         // Gestures the window started reach the host before it closes.
-        if let Some(editor) = &self.editor
-            && let Ok(mut changes) = editor.changes.try_borrow_mut()
-        {
-            changes.apply(&self.host);
-        }
+        self.apply_editor_changes();
     }
 
     fn set_scale(&self, scale: f64) -> Result<(), ClackError> {

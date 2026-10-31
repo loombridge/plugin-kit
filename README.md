@@ -12,13 +12,13 @@ Every crate carries the prefix `lspk-`.
 
 | Crate | What it will hold |
 |---|---|
-| `lspk-rt` | The real-time harness: thread priority and audio workgroups, denormal flushing, the allocation trap, a lock-free logger, the RealtimeSanitizer harness |
+| `lspk-rt` | The real-time harness: thread priority and audio workgroups, denormal flushing, the allocation trap, a lock-free logger, the RealtimeSanitizer harness, a wait-free channel of live values to an editor |
 | `lspk-params` | Parameter descriptors, smoothing, the parameter space of modular plug-ins (stable hierarchical IDs, fixed modules, slots, paths, remote-controls pages), sample-accurate parameter events, modulation offsets, gestures |
 | `lspk-commands` | The command registry: every user-facing action with a schema, a model-facing description and a permission class |
 | `lspk-agent` | The agent interface: MCP over stdio and over Streamable HTTP on loopback, tokens, permission prompts, the discovery file for running instances |
-| `lspk-dsp` | DSP building blocks: oscillators, interpolators, filters, envelopes, LFOs, oversampling, FFT, resampling, SIMD helpers, waveshapers |
+| `lspk-dsp` | DSP building blocks: oscillators, interpolators, filters, envelopes, LFOs, oversampling, FFT (a scope and spectrum analyser), resampling, SIMD helpers, waveshapers |
 | `lspk-voice` | Voice allocation and stealing, mono, legato and glide, unison, MPE and per-note expression |
-| `lspk-mod` | The modulation engine: a 64-slot matrix of sources, destinations, curves and auxiliary sources, per-voice and global, sample-accurate, at audio rate only where a destination needs it; its edits as commands |
+| `lspk-mod` | The modulation engine: a 64-slot matrix of sources, destinations, curves and auxiliary sources, per-voice and global, sample-accurate, at audio rate only where a destination needs it; its edits as commands; its live values for an interface |
 | `lspk-fx` | The effects library, each effect usable inside a plug-in and as a plug-in of its own |
 | `lspk-wavetable` | The wavetable model, WAV import and export, mipmaps, the wavetable, sub and noise oscillators and the shapers, spectral operations, resynthesis |
 | `lspk-seq` | Arpeggiator and step and clip sequencing, synced to the host's tempo |

@@ -119,6 +119,10 @@ struct HostInner {
     /// Which choice each slot of the parameter space held when last looked
     /// at.
     selection: RefCell<Vec<usize>>,
+    /// How many gestures are open on each parameter, so a gesture begun
+    /// inside another (an editor's drag running a command) is one to the
+    /// host.
+    open: RefCell<Vec<(ParamId, u32)>>,
 }
 
 impl Host {
@@ -132,6 +136,7 @@ impl Host {
                 values: OnceCell::new(),
                 edits: OnceCell::new(),
                 selection: RefCell::new(Vec::new()),
+                open: RefCell::new(Vec::new()),
             }),
         }
     }
@@ -193,11 +198,20 @@ impl Host {
     /// does. Follow it with [`set_param`](Self::set_param) for each new
     /// value and [`end_edit`](Self::end_edit) when they let go.
     ///
+    /// Gestures nest: one begun while another is open on the same
+    /// parameter, and its end, tell the host nothing, so a command that sets
+    /// a value inside an editor's drag leaves the host one gesture.
+    ///
     /// # Errors
     ///
     /// The edit wasn't made: see [`EditError`].
     pub fn begin_edit(&self, id: ParamId) -> Result<(), EditError> {
-        self.push(id, &[Edit::Begin(id)], false)
+        let open = self.open_gestures(id);
+        if open == 0 {
+            self.push(id, &[Edit::Begin(id)], false)?;
+        }
+        self.set_open_gestures(id, open + 1);
+        Ok(())
     }
 
     /// Sets parameter `id` to `value`, in its own units, clamped to its
@@ -226,27 +240,49 @@ impl Host {
     ///
     /// The edit wasn't made: see [`EditError`].
     pub fn end_edit(&self, id: ParamId) -> Result<(), EditError> {
-        self.push(id, &[Edit::End(id)], false)
+        let open = self.open_gestures(id);
+        if open <= 1 {
+            self.push(id, &[Edit::End(id)], false)?;
+        }
+        self.set_open_gestures(id, open.saturating_sub(1));
+        Ok(())
     }
 
     /// Sets parameter `id` to `value` in one gesture: begin, value, end,
-    /// as an agent's command or a typed value does.
+    /// as an agent's command or a typed value does. Inside a gesture
+    /// that's open on `id`, only the value.
     ///
     /// # Errors
     ///
     /// The edit wasn't made: see [`EditError`].
     pub fn edit(&self, id: ParamId, value: f64) -> Result<(), EditError> {
         let value = self.clamped(id, value)?;
-        let edits = [
-            Edit::Begin(id),
-            Edit::Value {
-                id,
-                value,
-                echo: true,
-            },
-            Edit::End(id),
-        ];
-        self.push(id, &edits, true)
+        let value = Edit::Value {
+            id,
+            value,
+            echo: true,
+        };
+        if self.open_gestures(id) > 0 {
+            return self.push(id, &[value], true);
+        }
+        self.push(id, &[Edit::Begin(id), value, Edit::End(id)], true)
+    }
+
+    fn open_gestures(&self, id: ParamId) -> u32 {
+        self.inner
+            .open
+            .borrow()
+            .iter()
+            .find(|(open, _)| *open == id)
+            .map_or(0, |(_, count)| *count)
+    }
+
+    fn set_open_gestures(&self, id: ParamId, count: u32) {
+        let mut open = self.inner.open.borrow_mut();
+        open.retain(|(open, _)| *open != id);
+        if count > 0 {
+            open.push((id, count));
+        }
     }
 
     /// Asks the host to deactivate and reactivate the plug-in.
@@ -712,6 +748,38 @@ mod tests {
         assert_eq!(
             host.edit(ParamId(9), 0.0),
             Err(EditError::UnknownParam(ParamId(9)))
+        );
+    }
+
+    #[test]
+    fn a_gesture_inside_another_tells_the_host_nothing() {
+        let (host, mut edits, _) = connected();
+        let value = |value| Edit::Value {
+            id: ParamId(1),
+            value,
+            echo: true,
+        };
+        host.begin_edit(ParamId(1)).expect("begins");
+        // A command's own gesture, and a whole edit, inside the drag.
+        host.begin_edit(ParamId(1)).expect("nests");
+        host.set_param(ParamId(1), 0.25).expect("a value");
+        host.end_edit(ParamId(1)).expect("ends the inner one");
+        host.edit(ParamId(1), 0.5).expect("a value");
+        host.end_edit(ParamId(1)).expect("ends");
+        // Once closed, an edit is a whole gesture again.
+        host.edit(ParamId(1), 0.75).expect("an edit");
+        let queued: Vec<Edit> = std::iter::from_fn(|| edits.pop().ok()).collect();
+        assert_eq!(
+            queued,
+            [
+                Edit::Begin(ParamId(1)),
+                value(0.25),
+                value(0.5),
+                Edit::End(ParamId(1)),
+                Edit::Begin(ParamId(1)),
+                value(0.75),
+                Edit::End(ParamId(1)),
+            ]
         );
     }
 

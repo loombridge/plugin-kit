@@ -64,8 +64,16 @@ impl<T> Input<T> {
     /// Publishes `value`, replacing any the reader hasn't taken yet.
     /// Wait-free.
     pub(crate) fn write(&mut self, value: T) {
+        self.write_with(|slot| *slot = value);
+    }
+
+    /// Fills the writer's slot in place with `fill`, then publishes it. The
+    /// slot holds an older value, not the latest one, so `fill` sets
+    /// everything the reader reads. Wait-free, and it never drops or moves
+    /// a `T`: a `T` that owns heap buffers stays off the allocator.
+    pub(crate) fn write_with(&mut self, fill: impl FnOnce(&mut T)) {
         // SAFETY: the writer owns `self.slot` until it swaps it into `back`.
-        unsafe { *self.shared.slots[usize::from(self.slot)].get() = value };
+        fill(unsafe { &mut *self.shared.slots[usize::from(self.slot)].get() });
         let back = self.shared.back.swap(self.slot | FRESH, Ordering::AcqRel);
         self.slot = back & SLOT;
     }
@@ -111,6 +119,13 @@ mod tests {
         input.write(Some(3));
         assert_eq!(*output.read(), Some(3));
         assert_eq!(*output.read(), Some(3), "reading again keeps the value");
+    }
+
+    #[test]
+    fn a_write_fills_the_slot_in_place() {
+        let (mut input, mut output) = triple_buffer(&vec![0u8; 3]);
+        input.write_with(|v| v.fill(9));
+        assert_eq!(output.read(), &[9, 9, 9]);
     }
 
     #[test]

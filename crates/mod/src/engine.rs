@@ -654,6 +654,38 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// Fills `out`, `voices` values for each destination, with
+    /// [`latest`](Self::latest): `out[dest.index() × voices + voice]`. A
+    /// value is NaN where no route reaches the destination or the voice
+    /// isn't playing.
+    ///
+    /// # Panics
+    ///
+    /// If `out` holds fewer than `voices` values for every destination of
+    /// the engine's program.
+    pub fn latest_all(&self, voices: usize, out: &mut [f32]) {
+        for (d, row) in out
+            .chunks_exact_mut(voices)
+            .take(self.program.by_dest.len())
+            .enumerate()
+        {
+            // Most destinations have no route: skip them without asking.
+            if self.program.by_dest[d].is_none() {
+                row.fill(f32::NAN);
+                continue;
+            }
+            for (v, slot) in row.iter_mut().enumerate() {
+                *slot = if self.is_active(v) {
+                    self.latest(DestId(d as u16), v).unwrap_or(f32::NAN)
+                } else {
+                    f32::NAN
+                };
+            }
+        }
+    }
+}
+
 impl State {
     /// A random value from 0 to 1 (xorshift64*).
     fn next_random(&mut self) -> f32 {

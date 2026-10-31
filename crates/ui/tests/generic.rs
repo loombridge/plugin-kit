@@ -1,18 +1,27 @@
 //! The generic interface, headless: every kind of control drawn from its
 //! descriptor, driven by the mouse, the keyboard and a screen reader, each
 //! change reaching the host as a gesture, and the accessibility tree
-//! carrying every control's role, name and value.
+//! carrying every control's role, name and value. Every change a control
+//! makes is a command the plug-in runs: a frame that changes a value before
+//! the commands run fails the test.
 
 use egui::accesskit::{self, Action, ActionData, ActionRequest, Role, Toggled, TreeId};
 use egui::{Event, Key, Modifiers, PointerButton, Pos2, RawInput, Rect, pos2, vec2};
+use lspk_commands::{CommandSpec, Context, NoArgs, Permission};
 use lspk_params::{ParamDescriptor, ParamId, ParamUnit, db_to_gain};
 use lspk_plugin::editor::{EditorChanges, EditorHost};
 use lspk_plugin::host::{Edit, HostBackend};
-use lspk_plugin::{EditorContext, EditorSize, Host, ParamValues};
+use lspk_plugin::{
+    AudioLayout, Buffers, EditorContext, EditorSize, Events, Host, ParamValues, Plugin,
+    PluginError, PluginInfo, ProcessConfig, ProcessContext, ProcessStatus, Processor,
+    RegisterError, Registry,
+};
+use lspk_plugin_agent::WithAgent;
 use lspk_ui::controls::control_id;
-use lspk_ui::editor::{draw, prepare};
-use lspk_ui::{GenericView, Theme};
+use lspk_ui::editor::{EditorUi, View, draw, prepare};
+use lspk_ui::{Action as Button, GenericView, Theme};
 use rtrb::Consumer;
+use serde_json::Value;
 use std::sync::Arc;
 
 const GAIN: ParamId = ParamId(1);
@@ -49,15 +58,101 @@ impl HostBackend for NoHost {
     fn values_changed(&self) {}
 }
 
+/// A plug-in with the test's parameters, exported with the agent
+/// interface as the kit's plug-ins are, so it has the `params.set` command
+/// an editor's value changes run.
+struct Probe {
+    host: Host,
+    /// The undo labels the plug-in's interface ran commands under.
+    labels: Vec<String>,
+}
+
+/// The probe's own command: halves the gain.
+const HALVE: &str = "probe.halve";
+
+struct Silent;
+
+impl Processor for Silent {
+    fn process(
+        &mut self,
+        _audio: &mut Buffers<'_>,
+        _events: &Events<'_>,
+        _cx: &mut ProcessContext<'_>,
+    ) -> ProcessStatus {
+        ProcessStatus::Continue
+    }
+
+    fn flush(&mut self, _events: &Events<'_>, _cx: &mut ProcessContext<'_>) {}
+}
+
+impl Plugin for Probe {
+    type Processor = Silent;
+
+    const INFO: PluginInfo = PluginInfo::new("com.loombridge.test.generic", "Generic Probe")
+        .audio(AudioLayout::effect(2));
+
+    fn new(host: Host) -> Self {
+        Self {
+            host,
+            labels: Vec::new(),
+        }
+    }
+
+    fn params(&self) -> Vec<ParamDescriptor> {
+        params()
+    }
+
+    fn register_commands(&self, registry: &mut Registry) -> Result<(), RegisterError> {
+        registry.register(
+            CommandSpec::new(HALVE, "Halve Gain")
+                .description("Halves the gain.")
+                .permission(Permission::Edit)
+                .context(Context::Global)
+                .args::<NoArgs>()
+                .result::<()>(),
+        )
+    }
+
+    fn run_command(&mut self, id: &str, _args: &Value) -> Result<Value, PluginError> {
+        assert_eq!(id, HALVE);
+        let gain = self.host.param(GAIN).expect("a parameter");
+        self.host
+            .edit(GAIN, gain / 2.0)
+            .map_err(|e| PluginError::new(e.to_string()))?;
+        Ok(Value::Null)
+    }
+
+    fn run_command_labelled(
+        &mut self,
+        id: &str,
+        args: &Value,
+        undo_label: &str,
+    ) -> Result<Value, PluginError> {
+        self.labels.push(undo_label.to_owned());
+        self.run_command(id, args)
+    }
+
+    fn activate(
+        &mut self,
+        _config: &ProcessConfig,
+        _values: &ParamValues,
+    ) -> Result<Silent, PluginError> {
+        Ok(Silent)
+    }
+}
+
 /// An editor's window without a window: egui run by hand, its changes
-/// passed to a plug-in's host link, as the CLAP export does.
-struct Harness {
+/// run on the plug-in and passed to its host link after each frame, as the
+/// CLAP export does when the host calls back.
+struct Harness<V = GenericView> {
     ctx: egui::Context,
     cx: EditorContext,
     changes: EditorChanges,
+    plugin: WithAgent<Probe>,
     host: Host,
     edits: Consumer<Edit>,
-    view: GenericView,
+    heard: Vec<Edit>,
+    view: V,
     theme: Theme,
     zoom: f32,
     time: f64,
@@ -66,10 +161,17 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
+        Self::with_view(GenericView::new("Test"))
+    }
+}
+
+impl<V: View> Harness<V> {
+    fn with_view(view: V) -> Self {
         let values = Arc::new(ParamValues::new(params()).expect("valid parameters"));
         let (cx, changes) = EditorContext::new(values.clone(), Box::new(NoHost));
         let host = Host::new(Box::new(NoHost));
         let edits = host.connect(values);
+        let plugin = WithAgent::<Probe>::new(host.clone());
         let theme = Theme::default();
         let ctx = egui::Context::default();
         prepare(&ctx, &theme);
@@ -77,9 +179,11 @@ impl Harness {
             ctx,
             cx,
             changes,
+            plugin,
             host,
             edits,
-            view: GenericView::new("Test"),
+            heard: Vec::new(),
+            view,
             theme,
             zoom: 1.0,
             time: 0.0,
@@ -101,18 +205,36 @@ impl Harness {
         self.time += 0.5;
         let ctx = self.ctx.clone();
         let mut zoom = self.zoom;
+        let before = self.stored();
         self.last = ctx.run_ui(input, |ui| {
             zoom = draw(ui, &mut self.view, &self.cx, &self.theme, zoom);
         });
         // No renderer takes the textures; say so, as egui asks.
         self.last.textures_delta.clear();
         self.zoom = zoom;
+        // The interface only asks: a value that moved while it drew moved
+        // without a command.
+        assert_eq!(
+            before,
+            self.stored(),
+            "a control changed a value outside a command"
+        );
+        // The host calls back, and the main thread runs what was asked.
+        self.changes.apply(&self.host, &mut self.plugin);
+        assert_eq!(self.cx.take_command_error(), None);
+        self.heard
+            .extend(std::iter::from_fn(|| self.edits.pop().ok()));
+    }
+
+    /// Every parameter's stored value now.
+    fn stored(&self) -> Vec<f64> {
+        let values = self.cx.values();
+        (0..values.len()).map(|i| values.value_at(i)).collect()
     }
 
     /// What the host has heard since last asked.
     fn edits(&mut self) -> Vec<Edit> {
-        self.changes.apply(&self.host);
-        std::iter::from_fn(|| self.edits.pop().ok()).collect()
+        std::mem::take(&mut self.heard)
     }
 
     fn rect(&self, id: ParamId) -> Rect {
@@ -226,6 +348,8 @@ fn a_knob_drag_is_one_gesture() {
 fn a_double_click_sets_the_default() {
     let mut h = Harness::new();
     h.cx.edit(GAIN, 0.5).expect("a parameter");
+    // The main thread runs it after the next frame.
+    h.frame(vec![]);
     h.edits();
     let knob = h.rect(GAIN).center();
     h.frame(vec![Event::PointerMoved(knob)]);
@@ -430,4 +554,50 @@ fn the_zoom_keys_and_buttons_stay_between_half_and_double() {
     h.click(plus);
     assert_eq!(h.zoom, 1.1);
     assert!(h.edits().is_empty());
+}
+
+/// A control that writes a value itself, the way every control did before
+/// commands.
+struct Bypass;
+
+impl View for Bypass {
+    fn ui(&mut self, _ui: &mut egui::Ui, editor: &mut EditorUi<'_>) {
+        editor.cx.values().set(GAIN, 0.5);
+    }
+}
+
+#[test]
+#[should_panic(expected = "a control changed a value outside a command")]
+fn a_control_that_writes_a_value_itself_fails_the_harness() {
+    Harness::with_view(Bypass);
+}
+
+#[test]
+fn an_edit_is_a_command_the_plug_in_runs_under_a_label() {
+    let mut h = Harness::new();
+    h.cx.edit(GAIN, 0.5).expect("a parameter");
+    // Asked, not done: the value waits for the main thread.
+    assert_eq!(h.value(GAIN), 1.0);
+    h.frame(vec![]);
+    assert_eq!(h.value(GAIN), 0.5);
+    assert_eq!(gesture(&h.edits(), GAIN), [0.5]);
+    // A command the plug-in doesn't have is refused, and says so.
+    h.cx.run_command("params.nothing", serde_json::json!({}), "Nothing");
+    h.changes.apply(&h.host, &mut h.plugin);
+    assert!(
+        h.cx.take_command_error()
+            .is_some_and(|why| why.contains("params.nothing"))
+    );
+}
+
+#[test]
+fn a_button_in_the_row_of_actions_runs_its_command_under_its_label() {
+    let view = GenericView::new("Test").with_actions(vec![Button::new(HALVE, "Halve Gain")]);
+    let mut h = Harness::with_view(view);
+    // The row sits under the bar, the first button at its left end.
+    let button = pos2(h.theme.sizes.spacing + 30.0, 48.0);
+    h.click(button);
+    assert_eq!(h.value(GAIN), 0.5);
+    assert_eq!(gesture(&h.edits(), GAIN), [0.5]);
+    assert_eq!(h.plugin.plugin().labels, ["Halve Gain"]);
 }
