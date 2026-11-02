@@ -107,7 +107,8 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             let rise = if back == 0 {
                 step * S::splat(SUB_BLOCK as f32)
             } else {
-                (last - pitch_at::<S>(step, base, pitch_mod, n - 1 - back, stride, c)) * S::splat(SUB_BLOCK as f32 / back as f32)
+                (last - pitch_at::<S>(step, base, pitch_mod, n - 1 - back, stride, c))
+                    * S::splat(SUB_BLOCK as f32 / back as f32)
             };
             let increment = self.increment::<S>(last + rise.max(S::splat(0.0)));
             increment.store(&mut self.lanes.increments[n * S::LANES..]);
