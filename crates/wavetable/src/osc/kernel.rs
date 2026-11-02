@@ -128,18 +128,18 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             // The highest increment in this stretch, and in it and the
             // next (and past the render when the next reaches its end).
             let (own, peak) = if varying {
-                let increment = |k: usize| increment_at::<S>(&self.lanes.increments, k);
+                let increments = &self.lanes.increments;
                 let mut own = <S::U32s>::splat(0);
                 for k in start..start + len {
-                    own = own.max(increment(k));
+                    own = own.max(increment_at::<S>(increments, k));
                 }
                 let end = start + len + SUB_BLOCK;
                 let mut peak = own;
                 for k in start + len..end.min(n) {
-                    peak = peak.max(increment(k));
+                    peak = peak.max(increment_at::<S>(increments, k));
                 }
                 if end >= n {
-                    peak = peak.max(increment(n));
+                    peak = peak.max(increment_at::<S>(increments, n));
                 }
                 (own, peak)
             } else {
@@ -282,12 +282,12 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             } else {
                 S::splat(1.0)
             };
-            let sample = |at: S::U32s| sample::<S, FADE, SMOOTH>(data, s, &frames, toward, at);
-            let mut value = sample(reads.phase[0]);
+            let mut value = sample::<S, FADE, SMOOTH>(data, s, &frames, toward, reads.phase[0]);
             if reads.count > 0 {
                 value *= reads.gain[0];
                 for i in 1..reads.count.min(super::MAX_READS) {
-                    value = sample(reads.phase[i]).mul_add(reads.gain[i], value);
+                    let more = sample::<S, FADE, SMOOTH>(data, s, &frames, toward, reads.phase[i]);
+                    value = more.mul_add(reads.gain[i], value);
                 }
             }
             let value = self.wave_stage.shape_at::<S>(s.c, k, increment, value) * gain;
