@@ -94,27 +94,20 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             let step = inputs
                 .pitch_step
                 .map_or(S::splat(0.0), |s| S::load(&s[c..]));
-            let modulation = |k: usize| inputs.pitch_mod.map(|m| S::load(&m[k * stride + c..]));
+            let pitch_mod = inputs.pitch_mod;
             for k in 0..n {
-                let mut pitch = S::splat(k as f32).mul_add(step, base);
-                if let Some(m) = modulation(k) {
-                    pitch += m;
-                }
+                let pitch = pitch_at::<S>(step, base, pitch_mod, k, stride, c);
                 let increment = self.increment::<S>(pitch);
                 increment.store(&mut self.lanes.increments[k * S::LANES..]);
             }
             // A stretch on: the last stretch's rise carried on (a fall is
             // ignored, which would make the level richer).
-            let pitch_at = |k: usize| {
-                let pitch = S::splat(k as f32).mul_add(step, base);
-                modulation(k).map_or(pitch, |m| pitch + m)
-            };
             let back = (n - 1).min(SUB_BLOCK);
-            let last = pitch_at(n - 1);
+            let last = pitch_at::<S>(step, base, pitch_mod, n - 1, stride, c);
             let rise = if back == 0 {
                 step * S::splat(SUB_BLOCK as f32)
             } else {
-                (last - pitch_at(n - 1 - back)) * S::splat(SUB_BLOCK as f32 / back as f32)
+                (last - pitch_at::<S>(step, base, pitch_mod, n - 1 - back, stride, c)) * S::splat(SUB_BLOCK as f32 / back as f32)
             };
             let increment = self.increment::<S>(last + rise.max(S::splat(0.0)));
             increment.store(&mut self.lanes.increments[n * S::LANES..]);
@@ -329,6 +322,25 @@ struct Stretch<S: F32s> {
     new: LaneLevels<S::U32s>,
     /// How many frames of its fade each lane had played before the stretch.
     faded: S,
+}
+
+/// The pitch at frame `k`: `base` and the pitch `step` a frame, with the
+/// frame's pitch modulation if there is one. A function, not a closure, for
+/// the reason [`increment_at`] is.
+#[inline(always)]
+fn pitch_at<S: F32s>(
+    step: S,
+    base: S,
+    modulation: Option<&[f32]>,
+    k: usize,
+    stride: usize,
+    c: usize,
+) -> S {
+    let pitch = S::splat(k as f32).mul_add(step, base);
+    match modulation {
+        Some(m) => pitch + S::load(&m[k * stride + c..]),
+        None => pitch,
+    }
 }
 
 /// The increments of frame `k`, one per lane.
