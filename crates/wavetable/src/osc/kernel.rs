@@ -128,7 +128,7 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             // The highest increment in this stretch, and in it and the
             // next (and past the render when the next reaches its end).
             let (own, peak) = if varying {
-                let increment = |k: usize| <S::U32s>::load(&self.lanes.increments[k * S::LANES..]);
+                let increment = |k: usize| increment_at::<S>(&self.lanes.increments, k);
                 let mut own = <S::U32s>::splat(0);
                 for k in start..start + len {
                     own = own.max(increment(k));
@@ -282,15 +282,7 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             } else {
                 S::splat(1.0)
             };
-            let sample = |at: S::U32s| {
-                let value = read::<S, SMOOTH>(data, &s.new, &frames, at);
-                if FADE {
-                    let before = read::<S, SMOOTH>(data, &s.old, &frames, at);
-                    (value - before).mul_add(toward, before)
-                } else {
-                    value
-                }
-            };
+            let sample = |at: S::U32s| sample::<S, FADE, SMOOTH>(data, s, &frames, toward, at);
             let mut value = sample(reads.phase[0]);
             if reads.count > 0 {
                 value *= reads.gain[0];
@@ -337,6 +329,35 @@ struct Stretch<S: F32s> {
     new: LaneLevels<S::U32s>,
     /// How many frames of its fade each lane had played before the stretch.
     faded: S,
+}
+
+/// The increments of frame `k`, one per lane.
+///
+/// A function, not a closure at its call sites: a closure that LLVM leaves
+/// out of line is compiled without the level's target features, and each of
+/// its intrinsics then becomes a call.
+#[inline(always)]
+fn increment_at<S: F32s>(increments: &[u32], k: usize) -> S::U32s {
+    <S::U32s>::load(&increments[k * S::LANES..])
+}
+
+/// One read of a stretch at `at`, crossfaded with the old level's when
+/// `FADE`. A function for the reason [`increment_at`] is.
+#[inline(always)]
+fn sample<S: F32s, const FADE: bool, const SMOOTH: bool>(
+    data: &[f32],
+    s: &Stretch<S>,
+    frames: &Frames<S>,
+    toward: S,
+    at: S::U32s,
+) -> S {
+    let value = read::<S, SMOOTH>(data, &s.new, frames, at);
+    if FADE {
+        let before = read::<S, SMOOTH>(data, &s.old, frames, at);
+        (value - before).mul_add(toward, before)
+    } else {
+        value
+    }
 }
 
 /// The lanes' values at `phase` in `frames` of `level`.
