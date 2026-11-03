@@ -29,16 +29,17 @@ use std::arch::x86_64::{
     _mm256_castps256_ps128, _mm256_castsi256_ps, _mm256_cvtepi32_ps, _mm256_cvttps_epi32,
     _mm256_div_ps, _mm256_extractf128_ps, _mm256_floor_ps, _mm256_fmadd_ps, _mm256_i32gather_ps,
     _mm256_loadu_ps, _mm256_loadu_si256, _mm256_max_epu32, _mm256_max_ps, _mm256_min_epu32,
-    _mm256_min_ps, _mm256_mul_epu32, _mm256_mul_ps, _mm256_mullo_epi32, _mm256_set1_epi32,
-    _mm256_set1_ps, _mm256_slli_epi32, _mm256_sqrt_ps, _mm256_srli_epi32, _mm256_srli_epi64,
-    _mm256_storeu_ps, _mm256_storeu_si256, _mm256_sub_epi32, _mm256_sub_ps, _mm256_xor_ps,
-    _mm512_abs_ps, _mm512_add_epi32, _mm512_add_ps, _mm512_castps_si512, _mm512_castsi512_ps,
-    _mm512_cvtepi32_ps, _mm512_cvttps_epi32, _mm512_div_ps, _mm512_fmadd_ps, _mm512_i32gather_ps,
-    _mm512_loadu_ps, _mm512_loadu_si512, _mm512_mask_blend_epi32, _mm512_max_epu32, _mm512_max_ps,
-    _mm512_min_epu32, _mm512_min_ps, _mm512_mul_epu32, _mm512_mul_ps, _mm512_mullo_epi32,
-    _mm512_reduce_add_ps, _mm512_roundscale_ps, _mm512_set1_epi32, _mm512_set1_ps,
-    _mm512_sllv_epi32, _mm512_sqrt_ps, _mm512_srli_epi64, _mm512_srlv_epi32, _mm512_storeu_ps,
-    _mm512_storeu_si512, _mm512_sub_epi32, _mm512_sub_ps, _mm512_xor_si512,
+    _mm256_min_ps, _mm256_mul_epu32, _mm256_mul_ps, _mm256_mullo_epi32, _mm256_permute2f128_ps,
+    _mm256_set1_epi32, _mm256_set1_ps, _mm256_shuffle_ps, _mm256_slli_epi32, _mm256_sqrt_ps,
+    _mm256_srli_epi32, _mm256_srli_epi64, _mm256_storeu_ps, _mm256_storeu_si256, _mm256_sub_epi32,
+    _mm256_sub_ps, _mm256_unpackhi_ps, _mm256_unpacklo_ps, _mm256_xor_ps, _mm512_abs_ps,
+    _mm512_add_epi32, _mm512_add_ps, _mm512_castps_si512, _mm512_castsi512_ps, _mm512_cvtepi32_ps,
+    _mm512_cvttps_epi32, _mm512_div_ps, _mm512_fmadd_ps, _mm512_i32gather_ps, _mm512_loadu_ps,
+    _mm512_loadu_si512, _mm512_mask_blend_epi32, _mm512_max_epu32, _mm512_max_ps, _mm512_min_epu32,
+    _mm512_min_ps, _mm512_mul_epu32, _mm512_mul_ps, _mm512_mullo_epi32, _mm512_reduce_add_ps,
+    _mm512_roundscale_ps, _mm512_set1_epi32, _mm512_set1_ps, _mm512_sllv_epi32, _mm512_sqrt_ps,
+    _mm512_srli_epi64, _mm512_srlv_epi32, _mm512_storeu_ps, _mm512_storeu_si512, _mm512_sub_epi32,
+    _mm512_sub_ps, _mm512_xor_si512,
 };
 
 use super::{F32s, Kernel, Level, U32s, gather_lanes, gather_limit};
@@ -325,10 +326,56 @@ impl F32s for Avx2 {
         let limit = gather_limit::<N>(table);
         let index = index.min(Avx2U::splat(limit));
         let base = table.as_ptr();
+        // Up to eight values a lane: read each lane's eight, and transpose.
+        // A gather instruction takes about twenty micro-ops per vector on
+        // Zen 3, and a gather of six values is six of them; eight loads and
+        // twenty-four shuffles take fewer. Only where all eight values are
+        // in the table, so the lanes read what the gather would.
+        if N <= 8 {
+            let mut at = [0u32; 8];
+            index.store(&mut at);
+            if at.iter().all(|&i| i as usize + 8 <= table.len()) {
+                // SAFETY: each lane's eight values from `base + at[l]` are
+                // in the table, as just checked.
+                let rows = at.map(|i| unsafe { _mm256_loadu_ps(base.add(i as usize)) });
+                let columns = transpose(rows);
+                return std::array::from_fn(|j| Self(columns[j]));
+            }
+        }
         // SAFETY: every index is at most `table.len() − N`, which fits an
         // `i32` (`gather_limit` checked both), so each lane's reads of
         // `base + j + index` stay in the table.
         std::array::from_fn(|j| Self(unsafe { _mm256_i32gather_ps::<4>(base.add(j), index.0) }))
+    }
+}
+
+/// Eight rows of eight values as eight columns.
+#[inline(always)]
+fn transpose(rows: [__m256; 8]) -> [__m256; 8] {
+    unsafe {
+        let [r0, r1, r2, r3, r4, r5, r6, r7] = rows;
+        let (t0, t1) = (_mm256_unpacklo_ps(r0, r1), _mm256_unpackhi_ps(r0, r1));
+        let (t2, t3) = (_mm256_unpacklo_ps(r2, r3), _mm256_unpackhi_ps(r2, r3));
+        let (t4, t5) = (_mm256_unpacklo_ps(r4, r5), _mm256_unpackhi_ps(r4, r5));
+        let (t6, t7) = (_mm256_unpacklo_ps(r6, r7), _mm256_unpackhi_ps(r6, r7));
+        let s0 = _mm256_shuffle_ps::<0x44>(t0, t2);
+        let s1 = _mm256_shuffle_ps::<0xEE>(t0, t2);
+        let s2 = _mm256_shuffle_ps::<0x44>(t1, t3);
+        let s3 = _mm256_shuffle_ps::<0xEE>(t1, t3);
+        let s4 = _mm256_shuffle_ps::<0x44>(t4, t6);
+        let s5 = _mm256_shuffle_ps::<0xEE>(t4, t6);
+        let s6 = _mm256_shuffle_ps::<0x44>(t5, t7);
+        let s7 = _mm256_shuffle_ps::<0xEE>(t5, t7);
+        [
+            _mm256_permute2f128_ps::<0x20>(s0, s4),
+            _mm256_permute2f128_ps::<0x20>(s1, s5),
+            _mm256_permute2f128_ps::<0x20>(s2, s6),
+            _mm256_permute2f128_ps::<0x20>(s3, s7),
+            _mm256_permute2f128_ps::<0x31>(s0, s4),
+            _mm256_permute2f128_ps::<0x31>(s1, s5),
+            _mm256_permute2f128_ps::<0x31>(s2, s6),
+            _mm256_permute2f128_ps::<0x31>(s3, s7),
+        ]
     }
 }
 

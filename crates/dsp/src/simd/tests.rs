@@ -232,6 +232,9 @@ struct IntOps<'a> {
     b: &'a [u32],
     x: &'a [f32],
     table: &'a [f32],
+    /// A table the six-value gather mostly stays inside, so lanes take the
+    /// path that reads eight values a lane, and a few clamp.
+    wide: &'a [f32],
 }
 
 impl Kernel for IntOps<'_> {
@@ -265,6 +268,7 @@ impl Kernel for IntOps<'_> {
         let mut floor = vec![0.0; n];
         let mut from_i32 = vec![0.0; n];
         let mut gathered = vec![0.0; 3 * n];
+        let mut gathered6 = vec![0.0; 6 * n];
         for at in (0..n).step_by(S::LANES) {
             let x = S::load(&self.x[at..]);
             x.to_bits().store(&mut bits[at..]);
@@ -274,11 +278,16 @@ impl Kernel for IntOps<'_> {
             for (j, row) in rows.iter().enumerate() {
                 row.store(&mut gathered[j * n + at..]);
             }
+            let rows = S::gather::<6>(self.wide, U::<S>::load(&self.b[at..]).shr::<20>());
+            for (j, row) in rows.iter().enumerate() {
+                row.store(&mut gathered6[j * n + at..]);
+            }
         }
         results.words.push(("to_bits", bits));
         results.floats.push(("floor", floor));
         results.floats.push(("from_i32", from_i32));
         results.floats.push(("gather", gathered));
+        results.floats.push(("gather6", gathered6));
         results
     }
 }
@@ -291,11 +300,13 @@ fn every_path_matches_the_portable_one_for_integer_lanes() {
     // the indices reach, so the gather clamps.
     let x = data(8, n);
     let table: Vec<f32> = (0..3_000).map(|i| i as f32 * 0.5).collect();
+    let wide: Vec<f32> = (0..4_100).map(|i| i as f32 * 0.25).collect();
     let ops = || IntOps {
         a: &a,
         b: &b,
         x: &x,
         table: &table,
+        wide: &wide,
     };
     let reference = dispatch_at(Level::Portable, ops()).unwrap_or_else(|_| unreachable!());
 
@@ -319,6 +330,18 @@ fn every_path_matches_the_portable_one_for_integer_lanes() {
                 gathered[j * n + i],
                 table[at + j],
                 "gather lane {i} row {j}"
+            );
+        }
+    }
+
+    let gathered6 = &reference.floats[3].1;
+    for i in 0..n {
+        let at = ((b[i] >> 20) as usize).min(wide.len() - 6);
+        for j in 0..6 {
+            assert_eq!(
+                gathered6[j * n + i],
+                wide[at + j],
+                "gather of six, lane {i} row {j}"
             );
         }
     }
