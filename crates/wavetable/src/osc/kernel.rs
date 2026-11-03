@@ -94,27 +94,21 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             let step = inputs
                 .pitch_step
                 .map_or(S::splat(0.0), |s| S::load(&s[c..]));
-            let modulation = |k: usize| inputs.pitch_mod.map(|m| S::load(&m[k * stride + c..]));
+            let pitch_mod = inputs.pitch_mod;
             for k in 0..n {
-                let mut pitch = S::splat(k as f32).mul_add(step, base);
-                if let Some(m) = modulation(k) {
-                    pitch += m;
-                }
+                let pitch = pitch_at::<S>(step, base, pitch_mod, k, stride, c);
                 let increment = self.increment::<S>(pitch);
                 increment.store(&mut self.lanes.increments[k * S::LANES..]);
             }
             // A stretch on: the last stretch's rise carried on (a fall is
             // ignored, which would make the level richer).
-            let pitch_at = |k: usize| {
-                let pitch = S::splat(k as f32).mul_add(step, base);
-                modulation(k).map_or(pitch, |m| pitch + m)
-            };
             let back = (n - 1).min(SUB_BLOCK);
-            let last = pitch_at(n - 1);
+            let last = pitch_at::<S>(step, base, pitch_mod, n - 1, stride, c);
             let rise = if back == 0 {
                 step * S::splat(SUB_BLOCK as f32)
             } else {
-                (last - pitch_at(n - 1 - back)) * S::splat(SUB_BLOCK as f32 / back as f32)
+                (last - pitch_at::<S>(step, base, pitch_mod, n - 1 - back, stride, c))
+                    * S::splat(SUB_BLOCK as f32 / back as f32)
             };
             let increment = self.increment::<S>(last + rise.max(S::splat(0.0)));
             increment.store(&mut self.lanes.increments[n * S::LANES..]);
@@ -128,18 +122,18 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             // The highest increment in this stretch, and in it and the
             // next (and past the render when the next reaches its end).
             let (own, peak) = if varying {
-                let increment = |k: usize| <S::U32s>::load(&self.lanes.increments[k * S::LANES..]);
+                let increments = &self.lanes.increments;
                 let mut own = <S::U32s>::splat(0);
                 for k in start..start + len {
-                    own = own.max(increment(k));
+                    own = own.max(increment_at::<S>(increments, k));
                 }
                 let end = start + len + SUB_BLOCK;
                 let mut peak = own;
                 for k in start + len..end.min(n) {
-                    peak = peak.max(increment(k));
+                    peak = peak.max(increment_at::<S>(increments, k));
                 }
                 if end >= n {
-                    peak = peak.max(increment(n));
+                    peak = peak.max(increment_at::<S>(increments, n));
                 }
                 (own, peak)
             } else {
@@ -282,20 +276,12 @@ impl<P: PhaseStage, W: WaveStage> Run<'_, '_, P, W> {
             } else {
                 S::splat(1.0)
             };
-            let sample = |at: S::U32s| {
-                let value = read::<S, SMOOTH>(data, &s.new, &frames, at);
-                if FADE {
-                    let before = read::<S, SMOOTH>(data, &s.old, &frames, at);
-                    (value - before).mul_add(toward, before)
-                } else {
-                    value
-                }
-            };
-            let mut value = sample(reads.phase[0]);
+            let mut value = sample::<S, FADE, SMOOTH>(data, s, &frames, toward, reads.phase[0]);
             if reads.count > 0 {
                 value *= reads.gain[0];
                 for i in 1..reads.count.min(super::MAX_READS) {
-                    value = sample(reads.phase[i]).mul_add(reads.gain[i], value);
+                    let more = sample::<S, FADE, SMOOTH>(data, s, &frames, toward, reads.phase[i]);
+                    value = more.mul_add(reads.gain[i], value);
                 }
             }
             let value = self.wave_stage.shape_at::<S>(s.c, k, increment, value) * gain;
@@ -337,6 +323,54 @@ struct Stretch<S: F32s> {
     new: LaneLevels<S::U32s>,
     /// How many frames of its fade each lane had played before the stretch.
     faded: S,
+}
+
+/// The pitch at frame `k`: `base` and the pitch `step` a frame, with the
+/// frame's pitch modulation if there is one. A function, not a closure, for
+/// the reason [`increment_at`] is.
+#[inline(always)]
+fn pitch_at<S: F32s>(
+    step: S,
+    base: S,
+    modulation: Option<&[f32]>,
+    k: usize,
+    stride: usize,
+    c: usize,
+) -> S {
+    let pitch = S::splat(k as f32).mul_add(step, base);
+    match modulation {
+        Some(m) => pitch + S::load(&m[k * stride + c..]),
+        None => pitch,
+    }
+}
+
+/// The increments of frame `k`, one per lane.
+///
+/// A function, not a closure at its call sites: a closure that LLVM leaves
+/// out of line is compiled without the level's target features, and each of
+/// its intrinsics then becomes a call.
+#[inline(always)]
+fn increment_at<S: F32s>(increments: &[u32], k: usize) -> S::U32s {
+    <S::U32s>::load(&increments[k * S::LANES..])
+}
+
+/// One read of a stretch at `at`, crossfaded with the old level's when
+/// `FADE`. A function for the reason [`increment_at`] is.
+#[inline(always)]
+fn sample<S: F32s, const FADE: bool, const SMOOTH: bool>(
+    data: &[f32],
+    s: &Stretch<S>,
+    frames: &Frames<S>,
+    toward: S,
+    at: S::U32s,
+) -> S {
+    let value = read::<S, SMOOTH>(data, &s.new, frames, at);
+    if FADE {
+        let before = read::<S, SMOOTH>(data, &s.old, frames, at);
+        (value - before).mul_add(toward, before)
+    } else {
+        value
+    }
 }
 
 /// The lanes' values at `phase` in `frames` of `level`.
