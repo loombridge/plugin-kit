@@ -336,9 +336,9 @@ impl F32s for Avx2 {
             index.store(&mut at);
             if at.iter().all(|&i| i as usize + 8 <= table.len()) {
                 // SAFETY: each lane's eight values from `base + at[l]` are
-                // in the table, as just checked.
-                let rows = at.map(|i| unsafe { _mm256_loadu_ps(base.add(i as usize)) });
-                let columns = transpose(rows);
+                // in the table, as just checked, and a value of this type
+                // exists only on a CPU with AVX2.
+                let columns = unsafe { load_columns(base, at) };
                 return std::array::from_fn(|j| Self(columns[j]));
             }
         }
@@ -349,11 +349,21 @@ impl F32s for Avx2 {
     }
 }
 
-/// Eight rows of eight values as eight columns.
-#[inline(always)]
-fn transpose(rows: [__m256; 8]) -> [__m256; 8] {
+/// The eight values at each of `at` in the table at `base`, as eight
+/// columns: column `j` holds value `j` of each lane.
+///
+/// Out of line in a build that doesn't inline, with the features of the
+/// level that calls it, so its frame goes when it returns instead of
+/// piling up in the kernel's, as inlined copies' would.
+///
+/// # Safety
+///
+/// The CPU must have AVX2, and the eight values from each `base + at[l]`
+/// must be in the table.
+#[target_feature(enable = "avx2")]
+unsafe fn load_columns(base: *const f32, at: [u32; 8]) -> [__m256; 8] {
     unsafe {
-        let [r0, r1, r2, r3, r4, r5, r6, r7] = rows;
+        let [r0, r1, r2, r3, r4, r5, r6, r7] = at.map(|i| _mm256_loadu_ps(base.add(i as usize)));
         let (t0, t1) = (_mm256_unpacklo_ps(r0, r1), _mm256_unpackhi_ps(r0, r1));
         let (t2, t3) = (_mm256_unpacklo_ps(r2, r3), _mm256_unpackhi_ps(r2, r3));
         let (t4, t5) = (_mm256_unpacklo_ps(r4, r5), _mm256_unpackhi_ps(r4, r5));
